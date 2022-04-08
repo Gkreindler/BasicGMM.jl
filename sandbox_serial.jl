@@ -1,6 +1,10 @@
 using Future
+
 using Statistics
 using StatsBase
+using Distributions
+
+
 using DataFrames
 using CSV
 using Random
@@ -8,13 +12,15 @@ using Random
 using PrettyPrint
 using Printf
 
+using FiniteDifferences
+
 include("gmm_wrappers.jl")
 include("gmm_display.jl")
 
 ### Model definitions
 include("model_logit.jl")
 
-
+fdsf
 
 ## true parameters
 true_theta = [1.5, 10.0]
@@ -22,7 +28,7 @@ true_theta = [1.5, 10.0]
 
 ## Define Data
 begin
-    N = 100
+    N = 1000
     # travel time difference route 1 - route 0 (minutes)
     travel_time_diff = rand(N) * 20
 
@@ -36,19 +42,22 @@ begin
         "price" => price
     )
 
-    takeup_data = data_synthetic(true_theta, data=data, model_params=model_params)
+    takeup_data = data_synthetic(true_theta, data=data, model_params=model_params, asymptotic=false)
 end
 
 
 # test
 #   a = logit_takeup_route1([1.0, 20.0], data=data, model_params=model_params)
 
+data_dict = Dict(
+	"data" => data,
+	"takeup_data" => takeup_data
+)
 
 # Define data moments for "true" parameters
     moms_data = moments_gmm(
                     theta=true_theta, 
-                    data=data,
-                    takeup_data=takeup_data,
+                    mydata_dict=data_dict,
                     model_params=model_params)
 
 
@@ -59,28 +68,22 @@ mean(moms_data, dims=1) |> display
 
 moments_gmm_loaded = (mytheta, mydata_dict) -> moments_gmm(
         theta=mytheta, 
-        data=mydata_dict["data"], 
-        takeup_data=mydata_dict["takeup_data"], 
+        mydata_dict=mydata_dict, 
         model_params=model_params)
 
-data_dict = Dict(
-	"data" => data,
-	"takeup_data" => takeup_data
-)
-# data_dict = $data_dict
 
 moments_gmm_loaded([1.0, 5.0], data_dict)
 
 gmm_options = Dict{String, Any}(
-	"main_debug" => true,
-	"main_n_start_pts" => 2,
-    "boot_n_start_pts" => 1,
+	"main_debug" => false,
+    "main_show_trace" => false,
+	"main_n_start_pts" => 100,
+    "boot_n_start_pts" => 100,
 	"main_run_parallel" => false,
 	"run_boot" => true,
 	"boot_n_runs" => 100,
 	"boot_throw_exceptions" => true,
 )
-
 
 main_n_start_pts = gmm_options["main_n_start_pts"]
 boot_n_start_pts = gmm_options["boot_n_start_pts"]
@@ -99,4 +102,5 @@ gmm_results = run_gmm(momfn=moments_gmm_loaded,
 		gmm_options=gmm_options
 	)
 
+# model_results
 get_model_results(gmm_results)

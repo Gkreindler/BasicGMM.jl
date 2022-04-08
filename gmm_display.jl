@@ -22,6 +22,28 @@ function get_model_results(gmm_results; ci_level=2.5, keep_only_converged=true)
         estimates_vec = get_estimates(gmm_results["gmm_main_results"])
         n_params = length(estimates_vec)
 
+        model_results = Vector{Any}(undef, n_params)
+        for i=1:n_params
+            model_results[i] = Dict(
+                "param name" => gmm_results["gmm_options"]["param_names"][i],
+                "estimate" => estimates_vec[i]
+            )
+        end
+
+    # confidence intervals asymptotic
+        z_low  = quantile(Normal(), ci_level / 100.0)
+        z_high = quantile(Normal(), 1.0 - ci_level / 100.0)
+
+        asy_cilow = estimates_vec .+ z_low  .* gmm_results["asy_stderr"]
+        asy_cihigh = estimates_vec .+ z_high .* gmm_results["asy_stderr"]
+
+        for i=1:n_params
+            model_results[i]["asy_stderr"] = gmm_results["asy_stderr"][i]
+            model_results[i]["asy_cilow"] = asy_cilow[i]
+            model_results[i]["asy_cihigh"] = asy_cihigh[i]
+            model_results[i]["ci_level"] = ci_level
+        end
+
     # confidence intervals based on bootstrap
         gmm_boots = gmm_results["gmm_boot_results"]
         # boot_estimates = zeros(length(gmm_boots), n_params)
@@ -49,17 +71,15 @@ function get_model_results(gmm_results; ci_level=2.5, keep_only_converged=true)
 
             boot_cilow, boot_cihigh = percentile(boot_vec, ci_levels) 
 
-            push!(model_results, Dict(
-                "param name" => gmm_results["gmm_options"]["param_names"][i],
-                "estimate" => estimates_vec[i],
-                "boot_cilow" => boot_cilow,
-                "boot_cihigh" => boot_cihigh,
-                "boot_cilevel" => ci_level
-            ))
+            model_results[i]["boot_cilow"] = boot_cilow
+            model_results[i]["boot_cihigh"] = boot_cihigh
+            model_results[i]["ci_level"] = ci_level
+            
         end
 
     print_model_results(model_results)
-
+    
+    # return [estimates_vec, boot_df]
 end
 
 ## Build the table
@@ -71,13 +91,18 @@ function pn1(mynumber; d=1)
 end
 
 function print_model_results(model_results;)
-    println("GMM estimates [bootstrap CI level", model_results[1]["boot_cilevel"], "]")
+    println("\nGMM estimates [bootstrap CI], (asymptotic CI), se. Using CI level ", model_results[1]["ci_level"], "]")
     for param_results in model_results
 
         est = pn1(param_results["estimate"], d=2)
         blo = pn1(param_results["boot_cilow"], d=2)
         bhi = pn1(param_results["boot_cihigh"], d=2)
 
-        println(est, " [", blo, ", ", bhi, "]")
+        alo = pn1(param_results["asy_cilow"], d=2)
+        ahi = pn1(param_results["asy_cihigh"], d=2)
+
+        se = pn1(param_results["asy_stderr"], d=2)
+
+        println(est, " [", blo, ", ", bhi, "]", " (", alo, ", ", ahi, ") ", se)
     end
 end

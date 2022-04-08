@@ -4,6 +4,22 @@ using LinearAlgebra
 using LsqFit 		# has to be modified version that accepts time limit
 
 
+"""
+    theta = typically the first stage estimate
+    momfn = moment function loaded with data and other parameters
+"""
+function vcov_gmm_iid(theta, momfn)
+    # compute matrix of moments
+    mom_matrix = momfn(theta)
+
+    # compute variance covariance matrix under iid assumption
+    # ensure it's Hermitian
+    N = size(mom_matrix, 1)
+    vcov_matrix = Hermitian(transpose(mom_matrix) * mom_matrix / N)
+
+    return vcov_matrix
+end
+
 # TODO: describe what this wrapper does
 """
 """
@@ -91,6 +107,7 @@ end
 		- data etc is already "loaded" in this function
 	theta_initials = initial condition (vector)
 	theta_lower, theta_upper = bounds (vectors, can include +/-Inf)
+    vcov_fn = function to compute variance covariance matrix. By default, vcov_gmm_iid which assumes data is iid.
 	n_runs = number of initial conditions
 	n_moms = size of moment function (number of moments) TODO: get this auto
 	results_dir_path = where to write results
@@ -113,6 +130,7 @@ function gmm_2step(;
 			theta_lower,
 			theta_upper,
 			n_runs,
+            vcov_fn=vcov_gmm_iid,
 			run_parallel=true,
             run_one_step_only=false,
 			n_moms=nothing,
@@ -309,14 +327,11 @@ function gmm_2step(;
     end
 
 ## Optimal Weighting Matrix
-	println("GMM => Computing optimal weighting matrix")
+    println("GMM => Computing optimal weighting matrix")
 
-    # compute matrix of moments
-	mom_matrix = momfn_loaded(theta_stage1)
-
- 	# compute optimal W matrix -> ensure it's Hermitian
-	nmomsize = size(mom_matrix, 1)
-	Wstep2 = Hermitian(transpose(mom_matrix) * mom_matrix / nmomsize)
+    # by default, call vcov_gmm_iid() which computes the variance covariance matrix assuming data is iid
+    # can also use user-provided function, useful when using classical minimum distance and non-iid data
+	Wstep2 = vcov_fn(theta_stage1, momfn_loaded)
 
     # ! TODO: isn't this sketchy?
 	# if super small determinant:
@@ -333,15 +348,6 @@ function gmm_2step(;
 	if debug
 		println("original Determinant and matrix")
 		display(det(Wstep2))
-		display(Wstep2)
-	end
-
-    # normalize
-	Wstep2 = Wstep2 * det(Wstep2)^(-1/size(Wstep2,1))
-
-	if debug
-		println("Determinant and matrix:")
-		display(det(Wstep2))  # close to 1
 		display(Wstep2)
 	end
 
@@ -425,24 +431,6 @@ function gmm_2step(;
 	    CSV.write(outputfile, all_results_df)
     end 
 
-    ## print to csv file
-	# stage1_df = DataFrame(
-	# 	"run" => 1:n_runs,
-	# 	"obj_vals" => obj_vals,
-	# 	"opt_converged" => opt_converged .+ 0,
-	# 	"opt_runtime" => opt_runtime,
-	# 	"is_best_vec" => is_best_vec
-	# )
-	# for i=1:length(all_runs_results[1]["result"].param)
-	# 	stage1_df[!, string("param_", i)] = [all_runs_results[idx]["result"].param[i] for idx=1:n_runs]
-	# end
-
-	# #
-    # if write_results_to_file > 0
-    #     outputfile = string(results_dir_path,"gmm_results_stage2_all.csv")
-    #     CSV.write(outputfile, stage1_df)
-    # end
-
 	println("GMM => complete")
 
     return gmm_main_object
@@ -481,7 +469,19 @@ try
 
 	data_dict_boot = copy(data_dict)
 	N = size(data_dict["data"], 1)
-	data_dict_boot["data"] = data_dict["data"][StatsBase.sample(boot_rng, 1:N, N), :]
+
+    boot_sample = StatsBase.sample(boot_rng, 1:N, N)
+
+    for mykey in keys(data_dict_boot)
+
+        if length(size(data_dict[mykey])) == 1
+            data_dict_boot[mykey] = data_dict[mykey][boot_sample]
+        elseif length(size(data_dict[mykey])) == 2
+            data_dict_boot[mykey] = data_dict[mykey][boot_sample, :]
+        end
+
+        
+    end	
 
 ## define the moment function with Boostrap Data
 	momfn_loaded = theta -> momfn(theta, data_dict_boot)
@@ -502,7 +502,7 @@ try
 			my_time_limit=my_time_limit,
 			debug=debug)
 
-    print(boot_result)
+    # print(boot_result)
 
     boot_result["results_stage1"][:, "boot_run_idx"] .= boot_run_idx
     boot_result["results_stage2"][:, "boot_run_idx"] .= boot_run_idx
@@ -674,6 +674,8 @@ function run_gmm(;
 
         "param_names" => nothing,
 
+        "N" => nothing,
+
 		"run_boot" 			=> false,
         "boot_run_parallel" => false,
 		"boot_n_runs" 		=> 200,
@@ -684,6 +686,8 @@ function run_gmm(;
 		"boot_time_limit"	=> -1,
 		"boot_throw_exceptions" => false,
 		"boot_debug" 		=> false,
+
+        "asy_var" => true,  # Compute asymptotic variance covariance matrix
 
 		"rootpath_input" => "",
 		"rootpath_output" => "",
@@ -700,6 +704,13 @@ function run_gmm(;
     if isnothing(gmm_options["param_names"])
         n_params = size(ESTIMATION_PARAMS["theta_initials"])[2]
         gmm_options["param_names"] = [string("param_", i) for i=1:n_params]
+    end
+
+    # number of observations
+    if isnothing(gmm_options["N"])
+        theta_test = ESTIMATION_PARAMS["theta_initials"][1, :]
+        mymoms = momfn(theta_test, data)
+        gmm_options["N"] = size(mymoms)[1]
     end
 
 ## Store results here
@@ -735,6 +746,47 @@ function run_gmm(;
                 my_maxIter      =gmm_options["main_maxIter"],
                 my_time_limit   =gmm_options["main_time_limit"],
                 debug           =gmm_options["main_debug"])
+
+        ### Asymptotic Standard Errors
+        if gmm_options["asy_var"]
+            # jacobian
+            # println("... computing jacobian")
+
+            myfactor = 1.0
+
+            # 
+            theta_optimum = get_estimates(gmm_results["gmm_main_results"])
+            
+            mymomfunction_main_avg = theta -> mean(momfn_loaded(theta), dims=1)
+
+            # higher factor = larger changes in parameters
+            myjac = jacobian(central_fdm(5, 1, factor=myfactor), mymomfunction_main_avg, theta_optimum)
+
+            G = myjac[1]
+            W = Hermitian(gmm_results["gmm_main_results"]["Wstep2"])
+
+            # https://ocw.mit.edu/courses/14-386-new-econometric-methods-spring-2007/b8a285cadaa8203272ad3cbce3ef445f_ngmm07.pdf
+            V = inv(transpose(G) * W  * G)
+
+            N = gmm_options["N"]
+
+            gmm_results["G"] = G
+            gmm_results["asy_vcov"] = V / N
+            gmm_results["asy_stderr"] = sqrt.(diag(V / N))
+
+            ### Save jacobian to file?
+            # myjac_df = DataFrame(myjac[1], :auto)
+            # myjac_df[!, "moment"] = moms_names_list
+
+            # select!(myjac_df, vcat(["moment"], "x" .* string.(1:length(theta_optimum))) )
+
+            # if parameter_names_list != ""
+            #     rename!(myjac_df, vcat(["moment"], parameter_names_list))
+            # end
+
+            # path = string(rootpath_results, "jac.csv")
+            # CSV.write(path, myjac_df)
+        end
     end
 
 

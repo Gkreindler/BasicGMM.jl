@@ -12,9 +12,12 @@ function logit_takeup_route1(
 
     alpha = theta[1]
     sigma = theta[2]
-    price = model_params["price"] # this will be zero for control group
+    price = model_params["price"] # this will be switched on only for treatment group
 
-    temp = ( - alpha .* data[:, 1] .+ price .* data[:, 2]) ./ sigma
+    travel_time_diff = data[:, 1]
+    treated = data[:, 2]
+
+    temp = ( - alpha .* travel_time_diff .+ price .* treated) ./ sigma
     temp = max.(min.(temp, MAXDIFF), -MAXDIFF)
     temp = exp.(temp)
 
@@ -23,9 +26,13 @@ end
 
 function data_synthetic(theta::Vector{Float64};
     data::Matrix{Float64},
-    model_params::Dict{String, Float64})
+    model_params::Dict{String, Float64}, asymptotic=false)
 
     data_probs = logit_takeup_route1(theta; data=data, model_params=model_params)
+
+    if asymptotic
+        return data_probs
+    end
 
     data_choices = rand(size(data,1)) .<= data_probs
     data_choices = convert.(Float64, data_choices)
@@ -40,35 +47,22 @@ function moments(;
         takeup::Vector{Float64},
         data::Matrix{Float64})
 
-    return hcat(takeup .* (1.0 .- data[:, 2]),
-                takeup .* data[:, 2])    
+    treated = data[:, 2]
+
+    return hcat(takeup .* (1.0 .- treated),
+                takeup .* treated)
 end
-
-# """
-# moments from the model
-# """
-# function moments_model(
-#     theta::Vector{Float64};
-#     data::Matrix{Float64},
-#     model_params::Dict{String, Float64})
-
-#     takeupr1 = logit_takeup_route1(theta, data=data, model_params=model_params)
-
-#     # moment 1 = takeup in control group
-#     # moment 2 = takeup in treatment group
-
-#     return hcat(takeupr1 .* (1.0 .- data[:, 2]),
-#                 takeupr1 .* data[:, 2])
-# end
 
 # """
 # moments (model minus data)
 # """
 function moments_gmm(;
     theta::Vector{Float64},
-    data::Matrix{Float64},
-    takeup_data::Vector{Float64},
+    mydata_dict::Dict{String, Array{Float64}},
     model_params::Dict{String, Float64})
+
+    data = mydata_dict["data"]
+    takeup_data = mydata_dict["takeup_data"]
 
     takeup_model = logit_takeup_route1(theta, data=data, model_params=model_params)
 

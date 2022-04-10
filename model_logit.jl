@@ -71,3 +71,33 @@ function moments_gmm(;
 
     return moms_model .- moms_data
 end
+
+
+# Function to generate fake data for testing
+function generate_data_logit(;N=200, travel_time_diff_max=20.0, price=10.0)
+
+    # travel time difference route 1 - route 0 (minutes)
+    travel_time_diff = rand(N) * travel_time_diff_max
+
+    # define treatment group dummy (will get charges for route 0)
+    treated = (rand(N) .< 0.5).* 1.0
+
+    # put together
+    data = hcat(travel_time_diff, treated)
+
+    # model parameters
+    model_params = Dict(
+        "price" => price
+    )
+
+    # generate data from model
+    takeup_data = data_synthetic(true_theta, data=data, model_params=model_params, asymptotic=false)
+
+    # this goes in GMM
+    data_dict = Dict(
+        "data" => data,
+        "takeup_data" => takeup_data
+    )
+
+    return data_dict, model_params
+end

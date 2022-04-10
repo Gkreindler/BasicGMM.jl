@@ -1,15 +1,24 @@
 
+# Todo: how to handle (a) errors in certain runs, (b) lack of convergence
+" Access the "
+function get_estimates(gmm_results; onestep=true)
 
-function get_estimates(gmm_main)
-    # (currently, for 2-stage GMM only)
-    gmm_main2 = gmm_main["results_stage2"]
+    if onestep
+        gmm_results_df = gmm_results["results_stage1"]
+    else # two-step optimal
+        gmm_results_df = gmm_results["results_stage2"]
+    end
 
-    estimates_row = gmm_main2[gmm_main2.is_best_vec .== 1, :]
+    estimates_row = gmm_results_df[gmm_results_df.is_optimum, :]
     @assert size(estimates_row)[1] == 1
 
     return estimates_row[1, r"param_"] |> Vector
 end
 
+
+
+
+# TODO: break up into smaller functions -> one per CIs with given level, etc.
 """
     ci_level: percentile (0-50), by default 2.5 meaning we compute 95% confidence intervals
 """
@@ -19,7 +28,7 @@ function get_model_results(gmm_results; ci_level=2.5, keep_only_converged=true)
     model_results = []
 
     # get parameter estimates 
-        estimates_vec = get_estimates(gmm_results["gmm_main_results"])
+        estimates_vec = get_estimates(gmm_results["gmm_main_results"], onestep=gmm_results["gmm_options"]["one_step_gmm"])
         n_params = length(estimates_vec)
 
         model_results = Vector{Any}(undef, n_params)
@@ -46,7 +55,8 @@ function get_model_results(gmm_results; ci_level=2.5, keep_only_converged=true)
 
     # confidence intervals based on bootstrap
         gmm_boots = gmm_results["gmm_boot_results"]
-        # boot_estimates = zeros(length(gmm_boots), n_params)
+
+        # TODO: use get_estimates(gmm_results; twostage=true)
 
         # one large DF
         boot_df = vcat([myel["results_stage2"] for myel in gmm_boots]...)
@@ -61,7 +71,7 @@ function get_model_results(gmm_results; ci_level=2.5, keep_only_converged=true)
         for i=1:n_params
         
             if keep_only_converged
-                boot_vec = boot_df[boot_df.opt_converged .== 1, string("param_", i)]
+                boot_vec = boot_df[boot_df.opt_converged, string("param_", i)]
             else
                 boot_vec = boot_df[:, string("param_", i)]
             end

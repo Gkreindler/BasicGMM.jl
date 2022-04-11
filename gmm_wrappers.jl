@@ -14,8 +14,8 @@ function vcov_gmm_iid(theta, momfn)
 
     # compute variance covariance matrix under iid assumption
     # ensure it's Hermitian
-    N = size(mom_matrix, 1)
-    vcov_matrix = Hermitian(transpose(mom_matrix) * mom_matrix / N)
+    n_observations = size(mom_matrix, 1)
+    vcov_matrix = Hermitian(transpose(mom_matrix) * mom_matrix / n_observations)
 
     return vcov_matrix
 end
@@ -330,6 +330,7 @@ function gmm_2step(;
 
 	## if one-step -> stop here
     if one_step_gmm
+        gmm_results["theta_hat"] = gmm_results["theta_hat_stage1"]
         return gmm_results
     end
 
@@ -446,6 +447,8 @@ function gmm_2step(;
     theta_hat_stage2 = gmm_results["theta_hat_stage2"] = all_results_df[idx_optimum, r"param_"] |> collect
 	obj_val_stage2 = all_results_df[idx_optimum, :obj_vals]
 
+    gmm_results["theta_hat"] = gmm_results["theta_hat_stage2"]
+
 	show_progress && println("GMM => stage 2 optimal theta   ", theta_hat_stage2)
 	show_progress && println("GMM => stage 2 optimal obj val ", obj_val_stage2)
 
@@ -500,9 +503,9 @@ try
 # TODO: sample_data_fn(DATA::Any, boot_rng::RandomNumberSeed)
 
 	data_dict_boot = copy(data)
-	N = size(data["data"], 1)
+	n_observations = size(data["data"], 1)
 
-    boot_sample = StatsBase.sample(boot_rng, 1:N, N)
+    boot_sample = StatsBase.sample(boot_rng, 1:n_observations, n_observations)
 
     for mykey in keys(data_dict_boot)
 
@@ -537,6 +540,12 @@ try
     # pprint(boot_result)
 
     boot_result["boot_run_idx"] = boot_run_idx
+    if haskey(boot_result, "results_stage1")
+        boot_result["results_stage1"][!, "boot_run_idx"] .= boot_run_idx
+    end
+    if haskey(boot_result, "results_stage2")
+        boot_result["results_stage2"][!, "boot_run_idx"] .= boot_run_idx
+    end
 
     return boot_result
 catch e
@@ -554,6 +563,8 @@ catch e
             "outcome" => fail,
             "outcome_detail" => ["bootstrap error " * string(boot_run_idx)]
         )
+
+        # TODO: add DF with all "failed"
         
 	end
 end
@@ -703,7 +714,8 @@ function run_gmm(;
 	gmm_options_default = Dict(
 
         "param_names" => nothing, # vector of parameter names (strings)
-        "N" => nothing, # number of observations (data size)
+        "n_observations" => nothing, # number of observations (data size)
+        "n_moms" => nothing, # number of moments
 
         # one-step or two-step GMM
         "one_step_gmm" => false, # one-step only
@@ -769,14 +781,22 @@ function run_gmm(;
     end
 
 ## get number of observations in the data
-# ? is this equal to one for CMD?
-    if isnothing(gmm_options["N"])
+    if isnothing(gmm_options["n_observations"]) || isnothing(gmm_options["n_moms"])
         theta_test = theta0[1, :]
         mymoms = momfn(theta_test, data)
-        gmm_options["N"] = size(mymoms)[1]
+        gmm_options["n_observations"] = size(mymoms)[1]
+        gmm_options["n_moms"] = size(mymoms)[2]
     end
 
-## Default parameter initial conditions
+## Number of initial conditions
+    main_n_initial_cond = size(theta0, 1)
+    if isnothing(theta0_boot)
+        boot_n_initial_cond = 0
+    else
+        boot_n_initial_cond = size(theta0_boot, 1)
+    end
+
+## Default parameter bounds
     if isnothing(theta_lower) 
         theta_lower = fill(-Inf, n_params)
     end
@@ -793,7 +813,12 @@ function run_gmm(;
             "theta_upper" => theta_upper,
             "theta0" => theta0,
             "theta0_boot" => theta0_boot
-        )
+        ),
+        "n_observations" => gmm_options["n_observations"],
+        "n_moms" => gmm_options["n_moms"],
+        "n_params" => n_params,
+        "main_n_initial_cond" => main_n_initial_cond,
+        "boot_n_initial_cond" => boot_n_initial_cond
     )
 
     
@@ -849,7 +874,18 @@ function run_gmm(;
         myjac = jacobian(central_fdm(5, 1, factor=myfactor), mymomfunction_main_avg, theta_optimum)
 
         G = myjac[1]
-        W = Hermitian(full_results["gmm_main_results"]["Wstep2"])
+        if gmm_options["one_step_gmm"]
+            # TODO: add variance-covariance matrix here
+
+            # variance covariance function
+            vcov_fn = gmm_options["vcov_fn"]
+            theta_hat_stage1 = full_results["gmm_main_results"]["theta_hat_stage1"]
+
+            Wstep2 = vcov_fn(theta_hat_stage1, momfn_loaded)
+            W = inv(Wstep2)
+        else
+            W = Hermitian(full_results["gmm_main_results"]["Wstep2"])
+        end
 
         # same for 2-step optimal GMM and CMD
         # https://ocw.mit.edu/courses/14-386-new-econometric-methods-spring-2007/b8a285cadaa8203272ad3cbce3ef445f_ngmm07.pdf
@@ -857,11 +893,11 @@ function run_gmm(;
         V = inv(transpose(G) * W  * G)
 
         # TODO: does this only work for GMM, not CMD?
-        N = gmm_options["N"]
+        n_observations = gmm_options["n_observations"]
 
         full_results["G"] = G
-        full_results["asy_vcov"] = V / N
-        full_results["asy_stderr"] = sqrt.(diag(V / N))
+        full_results["asy_vcov"] = V / n_observations
+        full_results["asy_stderr"] = sqrt.(diag(V / n_observations))
             
         # TODO: quick bootstrap ->
         # https://schrimpf.github.io/GMMInference.jl/bootstrap/

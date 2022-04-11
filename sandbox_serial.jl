@@ -1,17 +1,13 @@
 
 using Future
-
 using Statistics
 using StatsBase
 using Distributions
-
 using DataFrames
 using CSV
 using Random
-
 using PrettyPrint
 using Printf
-
 using FiniteDifferences
 
 include("gmm_wrappers.jl")
@@ -20,15 +16,11 @@ include("gmm_display.jl")
 ### Model definitions
 include("model_logit.jl")
 
-## true parameters
-true_theta = [1.5, 10.0]
-
 ## Generate data for testing
-
     # true parameters
     true_theta = [1.5, 10.0]
 
-    data_dict, model_params = generate_data_logit(N=200)
+    data_dict, model_params = generate_data_logit(N=2000)
 
 
 ## Define moments function with certain parameters already "loaded"
@@ -43,12 +35,14 @@ moments_gmm_loaded([1.0, 5.0], data_dict)
 gmm_options = Dict{String, Any}(
 	"main_run_parallel" => false,
 	"run_boot" => true,
-	"boot_n_runs" => 10,
-	"boot_throw_exceptions" => true
+	"boot_n_runs" => 100,
+	"boot_throw_exceptions" => true,
+    "one_step_gmm" => false
 )
 
-main_n_initial_cond = 100
-boot_n_initial_cond = 100
+# initial conditions
+main_n_initial_cond = 20
+boot_n_initial_cond = 20
 
 theta0 = repeat([1.0 5.0], main_n_initial_cond, 1)
 theta0_boot = repeat([1.0 5.0], boot_n_initial_cond, 1)
@@ -64,7 +58,4 @@ gmm_results = run_gmm(momfn=moments_gmm_loaded,
 		gmm_options=gmm_options
 	)
 
-# model_results
-# get_model_results(gmm_results)
-
-printstyled("ha!\n", color=:red)
+print_results(gmm_results)

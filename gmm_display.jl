@@ -148,7 +148,7 @@ function print_results(gmm_results; ci_level=2.5)
             output_line = " " * rpad(output_line, 20, " ")
 
             # asymptotic confidence interval
-            if gmm_options["asy_var"]
+            if gmm_options["var_asy"]
                 z_low  = quantile(Normal(), ci_level / 100.0)
                 z_high = quantile(Normal(), 1.0 - ci_level / 100.0)
 
@@ -161,7 +161,7 @@ function print_results(gmm_results; ci_level=2.5)
             end
 
             # bootstrap confidence interval
-            if gmm_options["run_boot"]
+            if ~isnothing(gmm_options["var_boot"])
                 ci_levels = [ci_level, 100 - ci_level]
 
                 boot_vec = [boot_result["theta_hat"][i] for boot_result=gmm_results["gmm_boot_results"]]
@@ -180,8 +180,10 @@ function print_results(gmm_results; ci_level=2.5)
 
         println(" ---------------------------------------------------------------------")
         print(" ", (100-2*ci_level), "% level confidence intervals. ")
-        if gmm_options["run_boot"]
-            println(" # bootstrap iterations: ", gmm_options["boot_n_runs"], ".\n")
+        if gmm_options["var_boot"] == "quick"
+            println("Quick bootstrap.\n")
+        elseif gmm_options["var_boot"] == "slow"
+            println("Slow bootstrap, # iterations: ", gmm_options["boot_n_runs"], ".\n")
         else
             println("\n")
         end
@@ -190,15 +192,15 @@ function print_results(gmm_results; ci_level=2.5)
 
     ### Optimization info:
     print(" Number of initial conditions: ", gmm_results["main_n_initial_cond"], " (main estimation)")
-    if gmm_results["boot_n_initial_cond"] > 0
+    if gmm_options["var_boot"] == "slow"
         println(", ", gmm_results["boot_n_initial_cond"], " (bootstrap)")
     else
         println()
     end
 
     ### Did all estimations converge?
-    if gmm_options["run_boot"]
-        print(" Main      estimation optimization: ")
+    if ~isnothing(gmm_options["var_boot"])
+        print(" Main estimation optimization: ")
     end
 
     if gmm_results["gmm_main_results"]["outcome"] == "success"
@@ -216,7 +218,7 @@ function print_results(gmm_results; ci_level=2.5)
     end
 
     # TODO: boot iterations that converged.
-    if gmm_options["run_boot"]
+    if gmm_options["var_boot"] == "slow"
         print(" Bootstrap estimation optimization: ")
 
         # TODO: handle failed runs

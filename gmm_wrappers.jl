@@ -482,28 +482,28 @@ function bootstrap_2step(;
                     theta_upper,
 					rootpath_boot_output,
 					boot_rng=nothing,
-					# bootstrap_samples=nothing,
 					Wstep1_from_moms=true,
 					# run_parallel=false,          # currently, always should be false
 					write_results_to_file=false,
-					show_trace=false,
 					maxIter=100,
 					time_limit=-1,
+                    show_trace=false,
 					throw_exceptions=true,
                     show_theta=false,
                     show_progress=false
 					)
 
 try
-## Announce
-	println("\nBOOT => Starting Bootstrap ", rootpath_boot_output)
+	show_progress && print(".")
 
-## load data and prepare
-# TODO: do and document this better -- default = like this, but should also be able to use a function
-# TODO: sample_data_fn(DATA::Any, boot_rng::RandomNumberSeed)
+    ## load data and prepare
+    # TODO: do and document this better -- default = assume data is a dictionary of vectors/matrices
+    # TODO: should also be able to use a boostrapping function
+    # TODO: sample_data_fn(DATA::Any, boot_rng::RandomNumberSeed)
 
 	data_dict_boot = copy(data)
-	n_observations = size(data["data"], 1)
+    firstdatakey = first(sort(collect(keys(data_dict_boot))))
+	n_observations = size(data[firstdatakey], 1)
 
     boot_sample = StatsBase.sample(boot_rng, 1:n_observations, n_observations)
 
@@ -535,7 +535,7 @@ try
 			maxIter=maxIter,
 			time_limit=time_limit,
             show_theta=show_theta,
-			show_progress=show_progress)
+			show_progress=false)
 
     # pprint(boot_result)
 
@@ -733,10 +733,10 @@ function run_gmm(;
 
         # inference:
         "vcov_fn" => vcov_gmm_iid, # vcov_fn = function to compute moment variance covariance matrix. Default: vcov_gmm_iid() assumes data is iid
-        "asy_var" => true,  # Compute asymptotic variance covariance matrix
+        "var_asy" => true,  # Compute asymptotic variance covariance matrix
+        "var_boot" => nothing,  # bootstrap. nothing or "quick" or "slow"
 
         # bootstrap:
-		"run_boot" 			=> false, # run bootstrap?
         "boot_run_parallel" => false, # each bootstrap run in parallel.
 		"boot_n_runs" 		=> 100, # number of bootstrap runs 
 		        # "boot_n_theta0"=> 1, # for each bootstrap run: number of independent optimization runs with different starting conditions
@@ -857,12 +857,12 @@ function run_gmm(;
             show_progress   =show_progress)
 
     ## Asymptotic Variance
-    if gmm_options["asy_var"] && full_results["gmm_main_results"]["outcome"] != "fail"
+    if (gmm_options["var_asy"] || gmm_options["var_boot"] == "quick") && full_results["gmm_main_results"]["outcome"] != "fail"
 
         show_progress && println("Computing asymptotic variance")
 
         # Get estimated parameter vector
-        theta_optimum = get_estimates(full_results["gmm_main_results"], onestep=gmm_options["one_step_gmm"])
+        theta_hat = get_estimates(full_results["gmm_main_results"], onestep=gmm_options["one_step_gmm"])
         
         # function that computes averaged moments
         mymomfunction_main_avg = theta -> mean(momfn_loaded(theta), dims=1)
@@ -871,7 +871,7 @@ function run_gmm(;
         ## numerical jacobian
         # higher factor = larger changes in parameters
         myfactor = 1.0
-        myjac = jacobian(central_fdm(5, 1, factor=myfactor), mymomfunction_main_avg, theta_optimum)
+        myjac = jacobian(central_fdm(5, 1, factor=myfactor), mymomfunction_main_avg, theta_hat)
 
         G = myjac[1]
         if gmm_options["one_step_gmm"]
@@ -898,24 +898,57 @@ function run_gmm(;
         full_results["G"] = G
         full_results["asy_vcov"] = V / n_observations
         full_results["asy_stderr"] = sqrt.(diag(V / n_observations))
-            
-        # TODO: quick bootstrap ->
+
+        ### Quick bootstrap
         # https://schrimpf.github.io/GMMInference.jl/bootstrap/
+        # https://ocw.mit.edu/courses/14-382-econometrics-spring-2017/resources/mit14_382s17_lec3/
         # https://ocw.mit.edu/courses/14-382-econometrics-spring-2017/resources/mit14_382s17_lec5/
+        if gmm_options["var_boot"] == "quick"
+            
+            # √n(θ̂ -θ₀) ∼ (G'AG)⁻¹G'Aϵ where G is Jacobian and A is the weighting matrix
+            M = (transpose(G) * W * G) \ (transpose(G) * W)
+
+            # Z=g(X,θ̂ ), demeaned
+            Z = momfn_loaded(theta_hat) .- mean(momfn_loaded(theta_hat), dims=1)
+
+            boot_n_runs = gmm_options["boot_n_runs"]
+            rng = MersenneTwister(123);
+            boot_results = Vector(undef, boot_n_runs)
+            for i=1:boot_n_runs
+                boot_sample = StatsBase.sample(rng, 1:n_observations, n_observations)
+
+                Z_boot = mean(Z[boot_sample, :], dims=1)
+
+                theta_hat_boot = theta_hat + vec(M * transpose(Z_boot))
+
+                boot_results[i] = Dict(
+                    "theta_hat" => theta_hat_boot,
+                    "boot_sample" => boot_sample
+                )
+            end
+
+            full_results["gmm_boot_results"] = boot_results
+        end
     end
     # end
 
-## Run "slow" bootstrap
-    # TODO: subtract avg moment value at estimated theta
-    
-    if gmm_options["run_boot"]
+## Run "slow" bootstrap where we re-run the minimization each time    
+    if gmm_options["var_boot"] == "slow"
         show_progress && println("Starting boostrap")
+
+        # Get estimated parameter vector
+        theta_hat = get_estimates(full_results["gmm_main_results"], onestep=gmm_options["one_step_gmm"])
+
+        # Define moment function for bootstrap -- target moment value at estimated theta
+        mom_at_theta_hat = mean(momfn_loaded(theta_hat), dims=1)
+
+        momfn_boot = (mytheta, mydata_dict) -> (momfn(mytheta, mydata_dict) .- mom_at_theta_hat)
 
         # one random number generator per bootstrap run
         current_rng = MersenneTwister(123);
         boot_rngs = Vector{Any}(undef, gmm_options["boot_n_runs"])
 
-        show_progress && println("Creating random number generator for boot run ")
+        show_progress && println("Creating random number generator for boot run:")
         for i=1:gmm_options["boot_n_runs"]
             show_progress && print(".")
             
@@ -938,11 +971,12 @@ function run_gmm(;
         # Run bootstrap
         boot_n_runs = gmm_options["boot_n_runs"]
 
+        show_progress && println("Bootstrap runs:")
         if gmm_options["boot_run_parallel"]
             boot_results = pmap(
             idx -> bootstrap_2step(
                         boot_run_idx=idx,
-                        momfn=momfn,
+                        momfn=momfn_boot,
                         data=data,
                         theta0_boot=theta0_boot,
                         theta_lower=theta_lower,
@@ -982,6 +1016,7 @@ function run_gmm(;
                     )
             end
         end
+        show_progress && println()
 
         full_results["gmm_boot_results"] = boot_results
 

@@ -10,6 +10,8 @@ using PrettyPrint
 using Printf
 using FiniteDifferences
 
+# Random.seed!(1234)
+
 include("gmm_wrappers.jl")
 include("gmm_display.jl")
 
@@ -20,7 +22,8 @@ include("model_logit.jl")
     # true parameters
     true_theta = [1.5, 10.0]
 
-    data_dict, model_params = generate_data_logit(N=2000)
+    rng = MersenneTwister(123);
+    data_dict, model_params = generate_data_logit(N=500, rng=rng)
 
 
 ## Define moments function with certain parameters already "loaded"
@@ -34,7 +37,7 @@ moments_gmm_loaded([1.0, 5.0], data_dict)
 
 gmm_options = Dict{String, Any}(
 	"main_run_parallel" => false,
-	"run_boot" => true,
+	"var_boot" => "quick",
 	"boot_n_runs" => 100,
 	"boot_throw_exceptions" => true,
     "one_step_gmm" => false

@@ -26,7 +26,7 @@ end
 
 function data_synthetic(theta::Vector{Float64};
     data::Matrix{Float64},
-    model_params::Dict{String, Float64}, asymptotic=false)
+    model_params::Dict{String, Float64}, asymptotic=false, rng=nothing)
 
     data_probs = logit_takeup_route1(theta; data=data, model_params=model_params)
 
@@ -34,7 +34,7 @@ function data_synthetic(theta::Vector{Float64};
         return data_probs
     end
 
-    data_choices = rand(size(data,1)) .<= data_probs
+    data_choices = rand(rng, size(data,1)) .<= data_probs
     data_choices = convert.(Float64, data_choices)
 
     return data_choices
@@ -74,13 +74,13 @@ end
 
 
 # Function to generate fake data for testing
-function generate_data_logit(;N=200, travel_time_diff_max=20.0, price=10.0)
+function generate_data_logit(;N=200, travel_time_diff_max=20.0, price=10.0, rng=nothing)
 
     # travel time difference route 1 - route 0 (minutes)
-    travel_time_diff = rand(N) * travel_time_diff_max
+    travel_time_diff = rand(rng, N) * travel_time_diff_max
 
     # define treatment group dummy (will get charges for route 0)
-    treated = (rand(N) .< 0.5).* 1.0
+    treated = (rand(rng, N) .< 0.5).* 1.0
 
     # put together
     data = hcat(travel_time_diff, treated)
@@ -91,7 +91,7 @@ function generate_data_logit(;N=200, travel_time_diff_max=20.0, price=10.0)
     )
 
     # generate data from model
-    takeup_data = data_synthetic(true_theta, data=data, model_params=model_params, asymptotic=false)
+    takeup_data = data_synthetic(true_theta, data=data, model_params=model_params, asymptotic=false, rng=rng)
 
     # this goes in GMM
     data_dict = Dict(

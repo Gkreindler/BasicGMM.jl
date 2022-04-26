@@ -774,6 +774,9 @@ function run_gmm(;
 	end
 
 ## convenience: parameter names (user-provided or default)
+    if isa(theta0, Vector)
+        theta0 = Matrix(transpose(theta0))
+    end
     n_params = size(theta0)[2]
 
     if isnothing(gmm_options["param_names"])

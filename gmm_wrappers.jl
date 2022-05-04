@@ -26,7 +26,7 @@ end
 function gmm_obj(;theta, Whalf, momfn, show_theta=false)
 
 	# print parameter vector at current step
-	show_theta && print("theta ", theta, " ")
+	show_theta && println(">>> theta ", theta, " ")
 
 	# compute moments
 	mymoms = momfn(theta)
@@ -35,7 +35,7 @@ function gmm_obj(;theta, Whalf, momfn, show_theta=false)
 	mean_mymoms = vec(mean(mymoms, dims=1) * Whalf)
 
 	# write the value of the objective function at the end of the line
-	show_theta && println(transpose(mean_mymoms) * mean_mymoms)
+	show_theta && println(">>> obj value:", transpose(mean_mymoms) * mean_mymoms)
 
 	return mean_mymoms
 end
@@ -118,6 +118,7 @@ results_dir_path = where to write results
 Wstep1 = weighting matrix (default = identity matrix).
         Should be Hermitian (this will be enforced).
         Will be Cholesky decomposed
+normalize_weight_matrix = boolean, if true, aim for the initial objective function to be <= O(1)
 jacobian = provide jacobian function
 write_results_to_file = 
     0 = nothing written to file
@@ -135,10 +136,11 @@ function gmm_2step(;
 			theta_upper,
             vcov_fn=vcov_gmm_iid,
 			run_parallel=true,
-            one_step_gmm=false,
+            two_step=false,
 			n_moms=nothing,
 			Wstep1=nothing,
 			Wstep1_from_moms=false,
+            normalize_weight_matrix=false,
 			results_dir_path="",
             write_results_to_file=0,
 			maxIter=1000,
@@ -185,6 +187,7 @@ function gmm_2step(;
 ## Initial weighting matrix Wstep1
     # Optional: compute initial weighting matrix based on moments covariances at initial "best guess" theta
 	if Wstep1_from_moms
+        show_progress && println("GMM => using W1 from moments")
 
 		# initial guess = median along all initial conditions
 		theta_initial = median(theta0, dims=1) |> vec
@@ -206,7 +209,12 @@ function gmm_2step(;
 		# invert (still Hermitian)
 		Wstep1 = inv(Wstep1)
 
-	else 
+    elseif ~isnothing(Wstep1)
+        show_progress && println("GMM => using provided W1")
+        
+    else
+        show_progress && println("GMM => using identity W1")
+
         # if not provided, use identity weighting matrix
         @assert isnothing(Wstep1)
 		Wstep1 = diagm(ones(n_moms))
@@ -222,6 +230,22 @@ function gmm_2step(;
 	# cholesky half. satisfies Whalf * transpose(Whalf) = W
 	initialWhalf = Matrix(cholesky(Hermitian(Wstep1)).L)
 	@assert norm(initialWhalf * transpose(initialWhalf) - Wstep1) < 1e-10
+
+## normalize weight matrix such that the objective function is <= O(1) (very roughly speaking)
+    if normalize_weight_matrix
+        # initial guess = median along all initial conditions
+		theta_initial = median(theta0, dims=1) |> vec
+
+		# evaluable moments
+		mom_matrix = momfn_loaded(theta_initial)
+
+        # norm
+        mom_norm = 1.0 + sqrt(norm(mean(mom_matrix, dims=1)))
+
+        initialWhalf = initialWhalf .* det(initialWhalf)^(-1/n_moms) ./ mom_norm
+
+        show_progress && println("GMM => Normalizing weight matrix.")
+    end
 
 ## GMM first stage
     show_progress && println("GMM => Launching stage 1, number of initial conditions: ", n_theta0)
@@ -329,7 +353,7 @@ function gmm_2step(;
     end 
 
 	## if one-step -> stop here
-    if one_step_gmm
+    if ~two_step
         gmm_results["theta_hat"] = gmm_results["theta_hat_stage1"]
         return gmm_results
     end
@@ -362,6 +386,12 @@ function gmm_2step(;
 	optimalWhalf = Matrix(cholesky(Wstep2).L)
 	@assert norm(optimalWhalf * transpose(optimalWhalf) - Wstep2) < 1e-10
 
+    ## normalize weight matrix such that the objective function is <= O(1) (very roughly speaking)
+    if normalize_weight_matrix
+        optimalWhalf = optimalWhalf .* det(optimalWhalf)^(-1/n_moms)
+
+        show_progress && println("GMM => Normalizing weight matrix.")
+    end
 
 ## GMM second stage
     show_progress && println("GMM => Launching stage 2, number of initial conditions: ", n_theta0)
@@ -718,12 +748,15 @@ function run_gmm(;
         "n_moms" => nothing, # number of moments
 
         # one-step or two-step GMM
-        "one_step_gmm" => false, # one-step only
+        "estimator" => "gmm2step", #"gmm1step" or "gmm2step" or "cmd" or "cmd_optimal"
         
         # main gmm estimation
 		"run_main" 			=> true, # run main estimation? False if only want to run bootstrap
 		        # "main_n_theta0" => 1, # number of independent optimization runs with different initial conditions
 		"main_Wstep1_from_moms" => false, # hack: at first stage use "optimal" weighting matrix based on initial guess for theta
+        "main_Wstep1" => nothing,
+        "normalize_weight_matrix" => false,
+
 		"main_write_results_to_file" => 0, # 0, 1 or 2, see definition in gmm_2step()
         "main_run_parallel" => false, # different starting conditions run in parallel
 		"main_maxIter" 		=> 1000, # maximum number of iterations for curve_fit() from LsqFit.jl
@@ -732,6 +765,7 @@ function run_gmm(;
 		"main_show_theta" 	=> false, # during optimization, print current value of theta for each evaluation of momfn + value of objective function
 
         # inference:
+        "cmd_omega" => nothing, # variance covariance of (pi^hat - pi0)
         "vcov_fn" => vcov_gmm_iid, # vcov_fn = function to compute moment variance covariance matrix. Default: vcov_gmm_iid() assumes data is iid
         "var_asy" => true,  # Compute asymptotic variance covariance matrix
         "var_boot" => nothing,  # bootstrap. nothing or "quick" or "slow"
@@ -783,12 +817,27 @@ function run_gmm(;
         gmm_options["param_names"] = [string("param_", i) for i=1:n_params]
     end
 
-## get number of observations in the data
+## get number of observations in the data and number of moments
     if isnothing(gmm_options["n_observations"]) || isnothing(gmm_options["n_moms"])
         theta_test = theta0[1, :]
         mymoms = momfn(theta_test, data)
         gmm_options["n_observations"] = size(mymoms)[1]
+
         gmm_options["n_moms"] = size(mymoms)[2]
+    end
+
+## one step?
+    gmm_options["2step"] = gmm_options["estimator"]  == "gmm2step"
+
+## CMD
+    if gmm_options["estimator"] == "cmd_optimal"
+        # optimal W = Ω⁻¹
+        gmm_options["main_Wstep1"] = inv(Symmetric(gmm_options["cmd_omega"]))
+    end
+
+    if (gmm_options["estimator"] in ["cmd", "gmm1step"]) && isnothing(gmm_options["main_Wstep1"])
+        # optimal W = Ω⁻¹
+        gmm_options["main_Wstep1"] = diagm(ones(gmm_options["n_moms"]))
     end
 
 ## Number of initial conditions
@@ -844,8 +893,10 @@ function run_gmm(;
             theta_lower     =theta_lower,
             theta_upper     =theta_upper,
 
-            one_step_gmm    =gmm_options["one_step_gmm"],
+            two_step    = gmm_options["2step"],
+            Wstep1=gmm_options["main_Wstep1"],
             Wstep1_from_moms=gmm_options["main_Wstep1_from_moms"],
+            normalize_weight_matrix=gmm_options["normalize_weight_matrix"],
             vcov_fn=gmm_options["vcov_fn"],
             
             results_dir_path=gmm_options["rootpath_output"],
@@ -865,7 +916,7 @@ function run_gmm(;
         show_progress && println("Computing asymptotic variance")
 
         # Get estimated parameter vector
-        theta_hat = get_estimates(full_results["gmm_main_results"], onestep=gmm_options["one_step_gmm"])
+        theta_hat = get_estimates(full_results["gmm_main_results"], onestep=~gmm_options["2step"])
         
         # function that computes averaged moments
         mymomfunction_main_avg = theta -> mean(momfn_loaded(theta), dims=1)
@@ -874,34 +925,64 @@ function run_gmm(;
         ## numerical jacobian
         # higher factor = larger changes in parameters
         myfactor = 1.0
-        myjac = jacobian(central_fdm(5, 1, factor=myfactor), mymomfunction_main_avg, theta_hat)
+
+        # max range -- in order to avoid sampling outside boundaries
+        my_max_range = 0.9 * min(minimum(abs.(theta_hat .- theta_lower)), minimum(abs.(theta_hat .- theta_upper)))
+
+        # compute jacobian
+        myjac = jacobian(central_fdm(5, 1, factor=myfactor, max_range=my_max_range), mymomfunction_main_avg, theta_hat)
 
         G = myjac[1]
-        if gmm_options["one_step_gmm"]
-            # TODO: add variance-covariance matrix here
 
-            # variance covariance function
-            vcov_fn = gmm_options["vcov_fn"]
-            theta_hat_stage1 = full_results["gmm_main_results"]["theta_hat_stage1"]
-
-            Wstep2 = vcov_fn(theta_hat_stage1, momfn_loaded)
-            W = inv(Wstep2)
-        else
-            W = Hermitian(full_results["gmm_main_results"]["Wstep2"])
-        end
-
+        # different formulas if optimal (2step GMM or optimal CMD) or any other weight matrix
         # same for 2-step optimal GMM and CMD
         # https://ocw.mit.edu/courses/14-386-new-econometric-methods-spring-2007/b8a285cadaa8203272ad3cbce3ef445f_ngmm07.pdf
         # https://ocw.mit.edu/courses/14-384-time-series-analysis-fall-2013/7ddedae5317fdd5424ff924688df7c7c_MIT14_384F13_rec12.pdf
-        V = inv(transpose(G) * W  * G)
 
-        # TODO: does this only work for GMM, not CMD?
+        if gmm_options["estimator"] == "cmd"
+            # (G'WG)⁻¹G' W Ω W G(G'WG)⁻¹
+            Ω = Symmetric(gmm_options["cmd_omega"])
+            W = Symmetric(gmm_options["main_Wstep1"])
+
+            bread = inv(transpose(G) * W * G) 
+            V = bread * transpose(G) * W * Ω * W * G * bread
+        end
+
+        if gmm_options["estimator"] == "cmd_optimal"
+            # W = Ω⁻¹ so the above simplifies to (G'WG)⁻¹
+            # Ω = Symetric(gmm_options["cmd_omega"])
+            W = Symmetric(gmm_options["main_Wstep1"])
+
+            V = inv(transpose(G) * W * G) 
+        end
+
+        if gmm_options["estimator"] == "gmm1step"
+            # (G'WG)⁻¹G' W Ω W G(G'WG)⁻¹
+
+            vcov_fn = gmm_options["vcov_fn"]
+            theta_hat_stage1 = full_results["gmm_main_results"]["theta_hat_stage1"]
+            Ω = vcov_fn(theta_hat_stage1, momfn_loaded)
+
+            W = Symmetric(gmm_options["main_Wstep1"])
+
+            bread = inv(transpose(G) * W * G) 
+            V = bread * transpose(G) * W * Ω * W * G * bread
+        end
+
+        if gmm_options["estimator"] == "gmm2step"
+            # W = Ω⁻¹ so the above simplifies to (G'WG)⁻¹
+            W = Symmetric(full_results["gmm_main_results"]["Wstep2"])
+            V = inv(transpose(G) * W * G) 
+        end
+
+        # treat GMM and CMD differently
         n_observations = gmm_options["n_observations"]
 
         full_results["G"] = G
         full_results["asy_vcov"] = V / n_observations
         full_results["asy_stderr"] = sqrt.(diag(V / n_observations))
 
+        
         ### Quick bootstrap
         # https://schrimpf.github.io/GMMInference.jl/bootstrap/
         # https://ocw.mit.edu/courses/14-382-econometrics-spring-2017/resources/mit14_382s17_lec3/
@@ -932,6 +1013,16 @@ function run_gmm(;
 
             full_results["gmm_boot_results"] = boot_results
         end
+
+        # write to file?
+        if gmm_options["main_write_results_to_file"] > 0
+            outputfile = string(gmm_options["rootpath_output"], "gmm_asy_vcov.csv")
+            CSV.write(outputfile, Tables.table(full_results["asy_vcov"]), header=false)
+
+            outputfile = string(gmm_options["rootpath_output"], "gmm_jacobian.csv")
+            CSV.write(outputfile, Tables.table(full_results["G"]), header=false)
+        end
+
     end
     # end
 
@@ -940,7 +1031,7 @@ function run_gmm(;
         show_progress && println("Starting boostrap")
 
         # Get estimated parameter vector
-        theta_hat = get_estimates(full_results["gmm_main_results"], onestep=gmm_options["one_step_gmm"])
+        theta_hat = get_estimates(full_results["gmm_main_results"], onestep=~gmm_options["2step"])
 
         # Define moment function for bootstrap -- target moment value at estimated theta
         mom_at_theta_hat = mean(momfn_loaded(theta_hat), dims=1)

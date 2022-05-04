@@ -20,7 +20,7 @@ function print_results(gmm_results; ci_level=2.5)
     gmm_options = gmm_results["gmm_options"]
 
     printstyled("======================================================================\n", color=:yellow)
-    if gmm_options["one_step_gmm"]
+    if ~gmm_options["2step"]
     println(" One-step GMM \n")
     else
     println(" Two-step GMM (optimal weighting matrix) \n")
@@ -57,7 +57,7 @@ function print_results(gmm_results; ci_level=2.5)
             end
 
             # bootstrap confidence interval
-            if ~isnothing(gmm_options["var_boot"])
+            if ~(isnothing(gmm_options["var_boot"]) || (gmm_options["var_boot"] == "")) 
                 ci_levels = [ci_level, 100 - ci_level]
 
                 boot_vec = [boot_result["theta_hat"][i] for boot_result=gmm_results["gmm_boot_results"]]
@@ -121,8 +121,8 @@ function print_results(gmm_results; ci_level=2.5)
         boot_df = [boot_result["results_stage1"] for boot_result=gmm_results["gmm_boot_results"]]
         boot_df = vcat(boot_df...)
 
-        if ~gmm_options["one_step_gmm"]
-            boot_df2 = [boot_result["results_stage1"] for boot_result=gmm_results["gmm_boot_results"]]
+        if gmm_options["2step"]
+            boot_df2 = [boot_result["results_stage2"] for boot_result=gmm_results["gmm_boot_results"]]
             boot_df2 = vcat(boot_df2...)
             boot_df = vcat(boot_df, boot_df2)
         end

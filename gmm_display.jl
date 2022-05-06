@@ -20,13 +20,55 @@ function print_results(gmm_results; ci_level=2.5)
     gmm_options = gmm_results["gmm_options"]
 
     printstyled("======================================================================\n", color=:yellow)
-    if ~gmm_options["2step"]
-    println(" One-step GMM \n")
-    else
-    println(" Two-step GMM (optimal weighting matrix) \n")
+
+    if gmm_options["estimator"] == "gmm1step"
+        println(" One-step GMM \n")
+    elseif gmm_options["estimator"] == "gmm2step"    
+        println(" Two-step GMM (optimal weighting matrix) \n")
+    elseif gmm_options["estimator"] == "cmd"    
+        println(" Classical Minimum Distance \n")
+    elseif gmm_options["estimator"] == "cmd_optimal"    
+        println(" Classical Minimum Distance with Optimal Weighting Matrix\n")
     end
-    println(" # moments: ", gmm_results["n_moms"], ". # parameters: ", gmm_results["n_params"], 
-           ". # observations: ", gmm_results["n_observations"], ".\n")
+    
+    print(" # moments: ", gmm_results["n_moms_full"])
+    if ~isnothing(gmm_options["subset_moms"])
+        print(" (", gmm_results["n_moms_full"] - gmm_results["n_moms"], " fixed). ")
+    else
+        print(". ")
+    end
+    
+    print("# parameters: ", gmm_results["n_params"])
+    if ~isnothing(gmm_options["fix_params"])
+        print(" (", length(gmm_options["fix_params"]), " fixed). ")
+    else
+        print(". ")
+    end
+    
+    println("# observations: ", gmm_results["n_observations"], ".\n")
+
+    if ~isnothing(gmm_options["subset_moms"])
+        println(" Estimation uses moments: ", gmm_options["subset_moms"], "\n")
+    end
+
+    n_params = gmm_results["n_params"]
+    if isnothing(gmm_options["fix_params"])
+        fixed_param_idxs = Set()
+
+        smaller_idxs = 1:n_params
+    else
+        fixed_param_idxs = Set(collect(keys(gmm_options["fix_params"])))
+
+        idxs = keys(gmm_options["fix_params"]) |> collect |> sort
+        other_idxs = sort(collect(setdiff(Set(1:n_params), Set(idxs))))
+
+        smaller_idxs = zeros(Int64, n_params)
+        for i=1:n_params
+            j = findfirst(x -> x==i, other_idxs)
+            isnothing(j) || (smaller_idxs[i] = j)            
+        end
+
+    end
 
     # parameter estimates
     main_results = gmm_results["gmm_main_results"]
@@ -38,37 +80,46 @@ function print_results(gmm_results; ci_level=2.5)
 
         for i=1:gmm_results["n_params"]
 
-            # estimate
-            theta = main_results["theta_hat"][i]
-            output_line = @sprintf("%g", theta)
-            output_line = " " * rpad(output_line, 20, " ")
+            if i in fixed_param_idxs
+                theta = gmm_options["fix_params"][i]
+                output_line = @sprintf("%g", theta)
+                output_line = " " * rpad(output_line, 20, " ") * "(fixed parameter)"
+            else
 
-            # asymptotic confidence interval
-            if gmm_options["var_asy"]
-                z_low  = quantile(Normal(), ci_level / 100.0)
-                z_high = quantile(Normal(), 1.0 - ci_level / 100.0)
+                j = smaller_idxs[i]
 
-                se = gmm_results["asy_stderr"][i]
-                asy_cilow = theta  .+ z_low  .* se
-                asy_cihigh = theta .+ z_high .* se
+                # estimate
+                theta = main_results["theta_hat"][j]
+                output_line = @sprintf("%g", theta)
+                output_line = " " * rpad(output_line, 20, " ")
 
-                temp = "[" * @sprintf("%g", asy_cilow) * ", " * @sprintf("%g", asy_cihigh) * "]"
-                output_line *= rpad(temp, 30, " ") 
-            end
+                # asymptotic confidence interval
+                if gmm_options["var_asy"]
+                    z_low  = quantile(Normal(), ci_level / 100.0)
+                    z_high = quantile(Normal(), 1.0 - ci_level / 100.0)
 
-            # bootstrap confidence interval
-            if ~(isnothing(gmm_options["var_boot"]) || (gmm_options["var_boot"] == "")) 
-                ci_levels = [ci_level, 100 - ci_level]
+                    se = gmm_results["asy_stderr"][j]
+                    asy_cilow = theta  .+ z_low  .* se
+                    asy_cihigh = theta .+ z_high .* se
 
-                boot_vec = [boot_result["theta_hat"][i] for boot_result=gmm_results["gmm_boot_results"]]
+                    temp = "[" * @sprintf("%g", asy_cilow) * ", " * @sprintf("%g", asy_cihigh) * "]"
+                    output_line *= rpad(temp, 30, " ") 
+                end
 
-                # ! skipping missing!
-                boot_vec = skipmissing(boot_vec) |> collect
+                # bootstrap confidence interval
+                if ~(isnothing(gmm_options["var_boot"]) || (gmm_options["var_boot"] == "")) 
+                    ci_levels = [ci_level, 100 - ci_level]
 
-                boot_cilow, boot_cihigh = percentile(boot_vec, ci_levels)
+                    boot_vec = [boot_result["theta_hat"][j] for boot_result=gmm_results["gmm_boot_results"]]
 
-                temp = "[" * @sprintf("%g", boot_cilow) * ", " * @sprintf("%g", boot_cihigh) * "]"
-                output_line *= rpad(temp, 30, " ")
+                    # ! skipping missing!
+                    boot_vec = skipmissing(boot_vec) |> collect
+
+                    boot_cilow, boot_cihigh = percentile(boot_vec, ci_levels)
+
+                    temp = "[" * @sprintf("%g", boot_cilow) * ", " * @sprintf("%g", boot_cihigh) * "]"
+                    output_line *= rpad(temp, 30, " ")
+                end
             end
 
             println(output_line)

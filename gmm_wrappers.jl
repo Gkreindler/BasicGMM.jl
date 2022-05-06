@@ -161,6 +161,7 @@ function gmm_2step(;
     gmm_results = Dict{String, Any}()
 
 ## if theta0 is a vector (one set of initial conditions), turn to 1 x n_params matrix
+    # ? ever needed?
 	if isa(theta0, Vector)
 		theta0 = Matrix(transpose(theta0))
 	end
@@ -740,6 +741,21 @@ function run_gmm(;
 		gmm_options=nothing,
 	)
 
+## Number of parameters
+    # if only one initial condition as Vector, convert to 1 x n_params matrix
+    if isa(theta0, Vector)
+        theta0 = Matrix(transpose(theta0))
+    end
+    n_params = size(theta0)[2]
+
+## Default parameter bounds
+    if isnothing(theta_lower) 
+        theta_lower = fill(-Inf, n_params)
+    end
+    if isnothing(theta_upper) 
+        theta_upper = fill(Inf, n_params)
+    end
+
 ## Default options
 	gmm_options_default = Dict(
 
@@ -749,6 +765,10 @@ function run_gmm(;
 
         # one-step or two-step GMM
         "estimator" => "gmm2step", #"gmm1step" or "gmm2step" or "cmd" or "cmd_optimal"
+
+        # subset parameters and moments
+        "fix_params" => nothing, # fix values for a subset of parameters: a dictionary with key,value pairs given by parameter_index => parameter_value.
+        "subset_moms" => nothing,   # only use a subset of moments in estimation: a Vector{Int64} of indices of parameters that WILL be used in estimation
         
         # main gmm estimation
 		"run_main" 			=> true, # run main estimation? False if only want to run bootstrap
@@ -807,24 +827,78 @@ function run_gmm(;
 		end
 	end
 
-## convenience: parameter names (user-provided or default)
-    if isa(theta0, Vector)
-        theta0 = Matrix(transpose(theta0))
-    end
-    n_params = size(theta0)[2]
-
-    if isnothing(gmm_options["param_names"])
-        gmm_options["param_names"] = [string("param_", i) for i=1:n_params]
-    end
-
 ## get number of observations in the data and number of moments
     if isnothing(gmm_options["n_observations"]) || isnothing(gmm_options["n_moms"])
         theta_test = theta0[1, :]
         mymoms = momfn(theta_test, data)
         gmm_options["n_observations"] = size(mymoms)[1]
-
-        gmm_options["n_moms"] = size(mymoms)[2]
+        gmm_options["n_moms_full"] = size(mymoms)[2]
     end
+
+## Fix some of the parameters (do not estimate)?
+    if ~isnothing(gmm_options["fix_params"])
+
+        println("Fixing parameters => ", gmm_options["fix_params"])
+
+        # nfix = length(gmm_options["fix_params"])
+        idxs = keys(gmm_options["fix_params"]) |> collect |> sort
+        vals = [gmm_options["fix_params"][idx] for idx=idxs]
+
+        n_params = size(theta0,2)
+        println("n_params ", n_params)
+        other_idxs = sort(collect(setdiff(Set(1:n_params), Set(idxs))))
+
+        function momfn1(mytheta::Vector{Float64}, mydata_dict, n_params, idxs, other_idxs, vals)
+            mytheta_new = zeros(Float64, n_params)
+            mytheta_new[idxs] .= vals
+            mytheta_new[other_idxs] .= mytheta
+            return momfn(mytheta_new, mydata_dict)
+        end
+
+        momfn2 = (mytheta, mydata_dict) -> momfn1(mytheta, mydata_dict, n_params, idxs, other_idxs, vals)
+
+        # automatically subset theta0 and bounds
+        theta0 = theta0[:, other_idxs]
+        isnothing(theta0_boot) || (theta0_boot = theta0_boot[:, other_idxs])
+        theta_upper = theta_upper[other_idxs]
+        theta_lower = theta_lower[other_idxs]
+
+        
+    else
+        momfn2=momfn
+    end
+
+## Subset of moments?
+    if ~isnothing(gmm_options["subset_moms"])
+
+        idxs_moms = gmm_options["subset_moms"]
+
+        println("Using a subset of moments => ", idxs_moms)
+
+        function momfn3(mytheta, mydata_dict, idxs_moms) 
+            allmoms = momfn2(mytheta, mydata_dict)
+            return allmoms[:, idxs_moms]
+        end
+        
+        momfn4 = (mytheta, mydata_dict) -> momfn3(mytheta, mydata_dict, idxs_moms)        
+        
+        gmm_options["n_moms"] = length(idxs_moms)
+
+        # also update the variance-covariance matrix to the subset of moment we're using
+        if ~isnothing(gmm_options["cmd_omega"])
+            gmm_options["cmd_omega"] = gmm_options["cmd_omega"][idxs_moms, idxs_moms]
+        end
+    else
+        momfn4=momfn2
+        gmm_options["n_moms"] = gmm_options["n_moms_full"]
+    end
+
+## convenience: parameter names (user-provided or default)
+    if isnothing(gmm_options["param_names"])
+        gmm_options["param_names"] = [string("param_", i) for i=1:n_params]
+    end
+
+
 
 ## one step?
     gmm_options["2step"] = gmm_options["estimator"]  == "gmm2step"
@@ -848,13 +922,7 @@ function run_gmm(;
         boot_n_initial_cond = size(theta0_boot, 1)
     end
 
-## Default parameter bounds
-    if isnothing(theta_lower) 
-        theta_lower = fill(-Inf, n_params)
-    end
-    if isnothing(theta_upper) 
-        theta_upper = fill(Inf, n_params)
-    end
+
 
 ## Store estimation results here
     # store parameters and options
@@ -868,6 +936,7 @@ function run_gmm(;
         ),
         "n_observations" => gmm_options["n_observations"],
         "n_moms" => gmm_options["n_moms"],
+        "n_moms_full" => gmm_options["n_moms_full"],
         "n_params" => n_params,
         "main_n_initial_cond" => main_n_initial_cond,
         "boot_n_initial_cond" => boot_n_initial_cond
@@ -878,7 +947,7 @@ function run_gmm(;
     show_progress = gmm_options["show_progress"]
 
 ## Load data into moments function
-	momfn_loaded = theta -> momfn(theta, data)
+	momfn_loaded = theta -> momfn4(theta, data)
 
 ## Run two-step GMM / CMD with optimal weighting matrix
     # if gmm_options["run_main"]

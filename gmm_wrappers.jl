@@ -139,7 +139,6 @@ function gmm_2step(;
             two_step=false,
 			n_moms=nothing,
 			Wstep1=nothing,
-			Wstep1_from_moms=false,
             normalize_weight_matrix=false,
 			results_dir_path="",
             write_results_to_file=0,
@@ -153,9 +152,6 @@ function gmm_2step(;
     if write_results_to_file ∉ [0, 1, 2]
         error("write_results_to_file should be 0, 1, or 2")
     end
-    if ~isnothing(Wstep1) && Wstep1_from_moms
-		error("cannot have both Wstep1 matrix AND Wstep1_from_moms=true")
-	end
 
 ## Store estimation results here
     gmm_results = Dict{String, Any}()
@@ -185,32 +181,8 @@ function gmm_2step(;
         CSV.write(outputfile, theta0_df)
     end
 
-## Initial weighting matrix Wstep1
-    # Optional: compute initial weighting matrix based on moments covariances at initial "best guess" theta
-	if Wstep1_from_moms
-        show_progress && println("GMM => using W1 from moments")
-
-		# initial guess = median along all initial conditions
-		theta_initial = median(theta0, dims=1) |> vec
-
-		# evaluable moments
-		mom_matrix = momfn_loaded(theta_initial)
-
-		# compute optimal W matrix -> ensure it's Hermitian
-		nmomsize = size(mom_matrix, 1)
-		Wstep1 = Hermitian(transpose(mom_matrix) * mom_matrix / nmomsize)
-
-        # ! Sketchy
-		# if super small determinant:
-		# if det(Wstep1) < 1e-100
-		# 	show_progress && println(" Matrix determinant very low: 1e-100. Adding 0.001 * I.")
-		# 	Wstep1 = Wstep1 + 0.001 * I
-		# end
-
-		# invert (still Hermitian)
-		Wstep1 = inv(Wstep1)
-
-    elseif ~isnothing(Wstep1)
+## Initial weighting matrix W
+	if ~isnothing(Wstep1)
         show_progress && println("GMM => using provided W1")
         
     else
@@ -513,7 +485,6 @@ function bootstrap_2step(;
                     theta_upper,
 					rootpath_boot_output,
 					boot_rng=nothing,
-					Wstep1_from_moms=true,
 					# run_parallel=false,          # currently, always should be false
 					write_results_to_file=false,
 					maxIter=100,
@@ -558,7 +529,6 @@ try
 			theta0=theta0_boot,
 			theta_lower=theta_lower,
 			theta_upper=theta_upper,
-			Wstep1_from_moms=Wstep1_from_moms,
 			run_parallel=false,
 			results_dir_path="",
 			write_results_to_file=write_results_to_file, ## TODO: do what here?
@@ -714,6 +684,98 @@ function boot_cleanup(;
 end
 
 
+function vector_theta_fix(mytheta, theta_fix)
+    
+    # indices of parameters to estimate
+    idxs_estim = findall(isnothing, theta_fix)
+    
+    # different for vectors and matrices
+    if isa(mytheta, Vector)
+        return mytheta[idxs_estim]
+    else
+        return mytheta[:, idxs_estim]
+    end
+
+end
+
+
+"""
+Calls the moment function `momfn` combining `mytheta` and the fixed parameters in `theta_fix`
+"""
+function momfn_theta_fix(momfn, mytheta, mydata_dict, theta_fix)
+
+    # indices of parameters that are fixed and those that need to be estimated
+    idxs_fixed = findall(x -> ~isnothing(x), theta_fix)
+    idxs_estim = findall(isnothing, theta_fix)
+
+    vals_fixed = [theta_fix[idx] for idx=idxs_fixed]
+
+    # make full parameter vector
+    mytheta_new = zeros(length(theta_fix))
+    mytheta_new[idxs_fixed] .= vals_fixed
+    mytheta_new[idxs_estim] .= mytheta
+
+    return momfn(mytheta_new, mydata_dict)
+end
+
+function omega_subset(myomega, moms_subset)
+    if isa(myomega, Matrix)
+        return myomega[moms_subset, moms_subset]
+    elseif isa(myomega, Function)
+        return (theta, momfn) -> myomega(theta, momfn)[moms_subset, moms_subset]
+    end
+end
+
+
+"""
+myfactor: higher factor = larger changes in parameters
+max range -- in order to avoid sampling outside boundaries
+"""
+function compute_jacobian(;
+        momfn,
+        data,
+        theta_hat,
+        theta_upper=nothing, 
+        theta_lower=nothing,
+        theta_fix=nothing,
+        moms_subset=nothing,
+        myfactor=1.0)
+    
+    # subset parameter and moments, if applicable
+    if ~isnothing(theta_fix)
+
+        # define moment function taking as input only the variable entries in theta
+        momfn2 = (mytheta, mydata_dict) -> momfn_theta_fix(momfn, mytheta, mydata_dict, theta_fix)
+        
+        # subset the other entries
+        theta_hat   = vector_theta_fix(theta_hat, theta_fix)
+        theta_upper = vector_theta_fix(theta_upper, theta_fix)
+        theta_lower = vector_theta_fix(theta_lower, theta_fix)
+            
+    else
+        momfn2 = momfn
+    end
+
+    if ~isnothing(moms_subset)
+        # moms_subset is a sorted vector of distinct indices between 1 and n_moms 
+        momfn3 = (mytheta, mydata_dict) -> momfn2(mytheta, mydata_dict)[:, moms_subset]
+    else
+        momfn3 = momfn2
+    end
+    
+    # function that computes averaged moments
+    mymomfunction_main_avg = mytheta -> mean(momfn3(mytheta, data), dims=1)
+
+    # numerical jacobian
+    my_max_range = 0.9 * min(minimum(abs.(theta_hat .- theta_lower)), minimum(abs.(theta_hat .- theta_upper)))
+
+    # compute jacobian
+    myjac = jacobian(central_fdm(5, 1, factor=myfactor, max_range=my_max_range), mymomfunction_main_avg, theta_hat)
+
+    return myjac[1]
+end
+
+
 """
     run_gmm(; momfn, data, theta0, theta0_boot=nothing, theta_upper=nothing, theta_lower=nothing, gmm_options=nothing)
 
@@ -731,6 +793,7 @@ Note: all arguments must be named (indicated by the ";" at the start), meaning c
 [1] run_gmm(momfn=my_moment_function, data=mydata, theta0=my_theta0)
 [2] run_gmm(my_moment_function, mydata, my_theta0)
 """
+
 function run_gmm(;
 		momfn,
 		data,
@@ -738,8 +801,18 @@ function run_gmm(;
         theta0_boot=nothing,
         theta_upper=nothing, 
         theta_lower=nothing,
+        W=nothing,
+        omega=nothing, # nothing, function or matrix
+        theta_fix=nothing,
+        moms_subset=nothing,
 		gmm_options=nothing,
 	)
+
+## make local copy and run checks
+    gmm_options = copy(gmm_options)
+    omega = copy(omega)
+
+    # runchecks(theta0, theta0_boot, theta_upper, theta_lower, gmm_options)
 
 ## Number of parameters
     # if only one initial condition as Vector, convert to 1 x n_params matrix
@@ -748,7 +821,7 @@ function run_gmm(;
     end
     n_params = size(theta0)[2]
 
-## Default parameter bounds
+    # Default parameter bounds
     if isnothing(theta_lower) 
         theta_lower = fill(-Inf, n_params)
     end
@@ -766,15 +839,10 @@ function run_gmm(;
         # one-step or two-step GMM
         "estimator" => "gmm2step", #"gmm1step" or "gmm2step" or "cmd" or "cmd_optimal"
 
-        # subset parameters and moments
-        "fix_params" => nothing, # fix values for a subset of parameters: a dictionary with key,value pairs given by parameter_index => parameter_value.
-        "subset_moms" => nothing,   # only use a subset of moments in estimation: a Vector{Int64} of indices of parameters that WILL be used in estimation
-        
         # main gmm estimation
 		"run_main" 			=> true, # run main estimation? False if only want to run bootstrap
 		        # "main_n_theta0" => 1, # number of independent optimization runs with different initial conditions
-		"main_Wstep1_from_moms" => false, # hack: at first stage use "optimal" weighting matrix based on initial guess for theta
-        "main_Wstep1" => nothing,
+        # "main_Wstep1" => nothing,
         "normalize_weight_matrix" => false,
 
 		"main_write_results_to_file" => 0, # 0, 1 or 2, see definition in gmm_2step()
@@ -785,8 +853,6 @@ function run_gmm(;
 		"main_show_theta" 	=> false, # during optimization, print current value of theta for each evaluation of momfn + value of objective function
 
         # inference:
-        "cmd_omega" => nothing, # variance covariance of (pi^hat - pi0)
-        "vcov_fn" => vcov_gmm_iid, # vcov_fn = function to compute moment variance covariance matrix. Default: vcov_gmm_iid() assumes data is iid
         "var_asy" => true,  # Compute asymptotic variance covariance matrix
         "var_boot" => nothing,  # bootstrap. nothing or "quick" or "slow"
 
@@ -812,8 +878,7 @@ function run_gmm(;
 
         # use estimated parameters when the optimizer did not converge (due to iteration limit or time limit). 
         # Attention! Results may be wrong/misleading! Only use for testing or if this is OK for use case.
-        "use_unconverged_results" => false, 
-
+        "use_unconverged_results" => false
 	)
 
     # for options that are not provided, use the default
@@ -835,83 +900,59 @@ function run_gmm(;
         gmm_options["n_moms_full"] = size(mymoms)[2]
     end
 
-## Fix some of the parameters (do not estimate)?
-    if ~isnothing(gmm_options["fix_params"])
+## Fix some of the parameters (estimate only the others)
+    if ~isnothing(theta_fix)
 
-        println("Fixing parameters => ", gmm_options["fix_params"])
-
-        # nfix = length(gmm_options["fix_params"])
-        idxs = keys(gmm_options["fix_params"]) |> collect |> sort
-        vals = [gmm_options["fix_params"][idx] for idx=idxs]
-
-        n_params = size(theta0,2)
-        println("n_params ", n_params)
-        other_idxs = sort(collect(setdiff(Set(1:n_params), Set(idxs))))
-
-        function momfn1(mytheta::Vector{Float64}, mydata_dict, n_params, idxs, other_idxs, vals)
-            mytheta_new = zeros(Float64, n_params)
-            mytheta_new[idxs] .= vals
-            mytheta_new[other_idxs] .= mytheta
-            return momfn(mytheta_new, mydata_dict)
-        end
-
-        momfn2 = (mytheta, mydata_dict) -> momfn1(mytheta, mydata_dict, n_params, idxs, other_idxs, vals)
-
-        # automatically subset theta0 and bounds
-        theta0 = theta0[:, other_idxs]
-        isnothing(theta0_boot) || (theta0_boot = theta0_boot[:, other_idxs])
-        theta_upper = theta_upper[other_idxs]
-        theta_lower = theta_lower[other_idxs]
-
+        # define moment function taking as input only the variable entries in theta
+        momfn2 = (mytheta, mydata_dict) -> momfn_theta_fix(momfn, mytheta, mydata_dict, theta_fix)
         
+        # subset the other entries
+        theta0      = vector_theta_fix(theta0, theta_fix)
+        theta_upper = vector_theta_fix(theta_upper, theta_fix)
+        theta_lower = vector_theta_fix(theta_lower, theta_fix)
+        isnothing(theta0_boot) || (theta0_boot = vector_theta_fix(theta0_boot, theta_fix))
+            
     else
-        momfn2=momfn
+        momfn2 = momfn
     end
 
 ## Subset of moments?
-    if ~isnothing(gmm_options["subset_moms"])
+    if ~isnothing(moms_subset)
 
-        idxs_moms = gmm_options["subset_moms"]
+        # basic checks: moms_subset is a sorted vector of distinct indices between 1 and n_moms 
+        sort!(moms_subset)
+        # TODO: add checks for moms_subset
 
-        println("Using a subset of moments => ", idxs_moms)
+        momfn3 = (mytheta, mydata_dict) -> momfn2(mytheta, mydata_dict)[:, moms_subset]
 
-        function momfn3(mytheta, mydata_dict, idxs_moms) 
-            allmoms = momfn2(mytheta, mydata_dict)
-            return allmoms[:, idxs_moms]
-        end
-        
-        momfn4 = (mytheta, mydata_dict) -> momfn3(mytheta, mydata_dict, idxs_moms)        
-        
-        gmm_options["n_moms"] = length(idxs_moms)
+        gmm_options["n_moms"] = length(moms_subset)
 
-        # also update the variance-covariance matrix to the subset of moment we're using
-        if ~isnothing(gmm_options["cmd_omega"])
-            gmm_options["cmd_omega"] = gmm_options["cmd_omega"][idxs_moms, idxs_moms]
-        end
+        # update the variance-covariance matrix to the subset of moment we're using
+        omega1 = omega_subset(omega, moms_subset)
+
     else
-        momfn4=momfn2
+        momfn3 = momfn2
         gmm_options["n_moms"] = gmm_options["n_moms_full"]
+        omega1 = omega
     end
 
-## convenience: parameter names (user-provided or default)
-    if isnothing(gmm_options["param_names"])
-        gmm_options["param_names"] = [string("param_", i) for i=1:n_params]
-    end
-
-
-
-## one step?
+## two-step estimator?
     gmm_options["2step"] = gmm_options["estimator"]  == "gmm2step"
 
 ## CMD
     if gmm_options["estimator"] == "cmd_optimal"
         # optimal W = Ω⁻¹
-        gmm_options["main_Wstep1"] = inv(Symmetric(gmm_options["cmd_omega"]))
-    end
+        W = inv(Symmetric(omega1))
+        @assert issymmetric(W)
 
-    if (gmm_options["estimator"] in ["cmd", "gmm1step"]) && isnothing(gmm_options["main_Wstep1"])
+    elseif (gmm_options["estimator"] in ["cmd", "gmm1step"]) && isnothing(W)
         # optimal W = Ω⁻¹
-        gmm_options["main_Wstep1"] = diagm(ones(gmm_options["n_moms"]))
+        W = diagm(ones(gmm_options["n_moms"]))
+        @assert issymmetric(W)
+
+    elseif ~issymmetric(W)
+        @warn "The provided weighting matrix W is not symmetric."
+        W = Symmetric(W)
     end
 
 ## Number of initial conditions
@@ -928,12 +969,14 @@ function run_gmm(;
     # store parameters and options
     full_results = Dict{String, Any}(
         "gmm_options" => gmm_options,
-        "gmm_parameters" => Dict(
-            "theta_lower" => theta_lower,
-            "theta_upper" => theta_upper,
-            "theta0" => theta0,
-            "theta0_boot" => theta0_boot
-        ),
+        "theta0" => theta0,
+        "theta0_boot" => theta0_boot,
+        "theta_upper" => theta_upper,
+        "theta_lower" => theta_lower,
+        "W" => W,
+        "omega" => omega,
+        "theta_fix" => theta_fix,
+        "moms_subset" => moms_subset,
         "n_observations" => gmm_options["n_observations"],
         "n_moms" => gmm_options["n_moms"],
         "n_moms_full" => gmm_options["n_moms_full"],
@@ -943,11 +986,13 @@ function run_gmm(;
     )
 
     
+
+    
 ## Misc
     show_progress = gmm_options["show_progress"]
 
 ## Load data into moments function
-	momfn_loaded = theta -> momfn4(theta, data)
+	momfn_loaded = theta -> momfn3(theta, data)
 
 ## Run two-step GMM / CMD with optimal weighting matrix
     # if gmm_options["run_main"]
@@ -963,10 +1008,9 @@ function run_gmm(;
             theta_upper     =theta_upper,
 
             two_step    = gmm_options["2step"],
-            Wstep1=gmm_options["main_Wstep1"],
-            Wstep1_from_moms=gmm_options["main_Wstep1_from_moms"],
+            Wstep1=W,
             normalize_weight_matrix=gmm_options["normalize_weight_matrix"],
-            vcov_fn=gmm_options["vcov_fn"],
+            vcov_fn=omega,
             
             results_dir_path=gmm_options["rootpath_output"],
             write_results_to_file=gmm_options["main_write_results_to_file"],
@@ -1010,8 +1054,9 @@ function run_gmm(;
 
         if gmm_options["estimator"] == "cmd"
             # (G'WG)⁻¹G' W Ω W G(G'WG)⁻¹
-            Ω = Symmetric(gmm_options["cmd_omega"])
-            W = Symmetric(gmm_options["main_Wstep1"])
+            # Ω = Symmetric(gmm_options["cmd_omega"])
+            Ω = Symmetric(omega1)
+            W = Symmetric(W)
 
             bread = inv(transpose(G) * W * G) 
             V = bread * transpose(G) * W * Ω * W * G * bread
@@ -1020,7 +1065,7 @@ function run_gmm(;
         if gmm_options["estimator"] == "cmd_optimal"
             # W = Ω⁻¹ so the above simplifies to (G'WG)⁻¹
             # Ω = Symetric(gmm_options["cmd_omega"])
-            W = Symmetric(gmm_options["main_Wstep1"])
+            W = Symmetric(W)
 
             V = inv(transpose(G) * W * G) 
         end
@@ -1028,11 +1073,11 @@ function run_gmm(;
         if gmm_options["estimator"] == "gmm1step"
             # (G'WG)⁻¹G' W Ω W G(G'WG)⁻¹
 
-            vcov_fn = gmm_options["vcov_fn"]
+            vcov_fn = omega1
             theta_hat_stage1 = full_results["gmm_main_results"]["theta_hat_stage1"]
             Ω = vcov_fn(theta_hat_stage1, momfn_loaded)
 
-            W = Symmetric(gmm_options["main_Wstep1"])
+            W = Symmetric(W)
 
             bread = inv(transpose(G) * W * G) 
             V = bread * transpose(G) * W * Ω * W * G * bread
@@ -1146,7 +1191,6 @@ function run_gmm(;
                         theta_upper=theta_upper,
                         rootpath_boot_output="",
                         boot_rng=boot_rngs[idx],
-                        Wstep1_from_moms=true,
                         write_results_to_file=gmm_options["boot_write_results_to_file"],
                         maxIter=gmm_options["boot_maxIter"],
                         time_limit=gmm_options["boot_time_limit"],
@@ -1168,7 +1212,6 @@ function run_gmm(;
                         theta_upper=theta_upper,
                         rootpath_boot_output="",
                         boot_rng=boot_rngs[boot_run_idx],
-                        Wstep1_from_moms=true,
                         write_results_to_file=gmm_options["boot_write_results_to_file"],
                         maxIter=gmm_options["boot_maxIter"],
                         time_limit=gmm_options["boot_time_limit"],

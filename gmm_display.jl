@@ -31,67 +31,83 @@ function print_results(gmm_results; ci_level=2.5)
         println(" Classical Minimum Distance with Optimal Weighting Matrix\n")
     end
     
-    print(" # moments: ", gmm_results["n_moms_full"])
-    if ~isnothing(gmm_options["subset_moms"])
-        print(" (", gmm_results["n_moms_full"] - gmm_results["n_moms"], " fixed). ")
+    n_moms_estim = gmm_results["n_moms"]
+    if ~isnothing(gmm_results["moms_subset"])    
+        n_moms_dropd = gmm_results["n_moms_full"] - gmm_results["n_moms"]
+        
+        print(" # moments: ", n_moms_estim, " (plus ", n_moms_dropd, " not used). ")
     else
-        print(". ")
+        print(" # moments: ", n_moms_estim, ". ")
     end
     
-    print("# parameters: ", gmm_results["n_params"])
-    if ~isnothing(gmm_options["fix_params"])
-        print(" (", length(gmm_options["fix_params"]), " fixed). ")
+    n_params = gmm_results["n_params"]
+    if ~isnothing(gmm_results["theta_fix"])
+        
+        n_params_estimated = length(findall(isnothing, gmm_results["theta_fix"]))
+
+        print("# parameters: ", n_params_estimated, " (plus ", n_params - n_params_estimated, " fixed). ")
     else
-        print(". ")
+        print("# parameters: ", n_params, "). ")
     end
     
     println("# observations: ", gmm_results["n_observations"], ".\n")
 
-    if ~isnothing(gmm_options["subset_moms"])
-        println(" Estimation uses moments: ", gmm_options["subset_moms"], "\n")
+    if ~isnothing(gmm_results["moms_subset"])
+        println(" Estimation uses moments: ", gmm_results["moms_subset"], "\n")
     end
 
     n_params = gmm_results["n_params"]
-    if isnothing(gmm_options["fix_params"])
-        fixed_param_idxs = Set()
+    if isnothing(gmm_results["theta_fix"])
+        idxs_fixed = []
 
         smaller_idxs = 1:n_params
     else
-        fixed_param_idxs = Set(collect(keys(gmm_options["fix_params"])))
+        theta_fix = gmm_results["theta_fix"]
+        idxs_fixed = findall(x -> ~isnothing(x), theta_fix)
+        idxs_estim = findall(isnothing, theta_fix)
 
-        idxs = keys(gmm_options["fix_params"]) |> collect |> sort
-        other_idxs = sort(collect(setdiff(Set(1:n_params), Set(idxs))))
-
+        # mapping from 1:n_params to the smaller 1:n_params_to_estimate
         smaller_idxs = zeros(Int64, n_params)
-        for i=1:n_params
-            j = findfirst(x -> x==i, other_idxs)
-            isnothing(j) || (smaller_idxs[i] = j)            
-        end
-
+        smaller_idxs[idxs_estim] = 1:length(idxs_estim)
     end
 
     # parameter estimates
     main_results = gmm_results["gmm_main_results"]
     if main_results["outcome"] != "failed"
+
         # header
-        println(" ---------------------------------------------------------------------")
-        println(" Estimate             Asymptotic CI                 Bootstrap CI      ")
-        println(" ---------------------------------------------------------------------")
+        if isnothing(gmm_options["param_names"])
+            println(" -------------------------------------------------------------------------")
+            println(" #   Estimate             Asymptotic CI                 Bootstrap CI      ")
+            println(" -------------------------------------------------------------------------")
+            l1 = " "
+        else
+            wmax = max(20, min(30, maximum(length.(gmm_options["param_names"]))) + 4)
+            l1 = rpad(" ", wmax, "-")
+            l2 = rpad(" #  Param Name ", wmax + 2, " ")
+            println(l1 * "------------------------------------------------------------------------")
+            println(l2 * " Estimate             Asymptotic CI                 Bootstrap CI      ")
+            println(l1 * "------------------------------------------------------------------------")
+        end
 
         for i=1:gmm_results["n_params"]
 
-            if i in fixed_param_idxs
-                theta = gmm_options["fix_params"][i]
-                output_line = @sprintf("%g", theta)
-                output_line = " " * rpad(output_line, 20, " ") * "(fixed parameter)"
+            output_line = " " * string(i) * ") "
+            
+            if ~isnothing(gmm_options["param_names"])
+                output_line *= rpad(gmm_options["param_names"][i], wmax - 2, " ")
+            end
+
+            if i in idxs_fixed
+                theta = gmm_results["theta_fix"][i]
+                output_line *= " " * rpad(@sprintf("%g", theta), 20, " ") * "(fixed parameter)"
             else
 
                 j = smaller_idxs[i]
 
                 # estimate
                 theta = main_results["theta_hat"][j]
-                output_line = @sprintf("%g", theta)
-                output_line = " " * rpad(output_line, 20, " ")
+                output_line *= " " * rpad(@sprintf("%g", theta), 20, " ") 
 
                 # asymptotic confidence interval
                 if gmm_options["var_asy"]
@@ -125,8 +141,8 @@ function print_results(gmm_results; ci_level=2.5)
             println(output_line)
         end
 
-        println(" ---------------------------------------------------------------------")
-        print(" ", (100-2*ci_level), "% level confidence intervals. ")
+        println(l1 * "-------------------------------------------------------------------------")
+        print(" ", Int64(floor(100-2*ci_level)), "% level confidence intervals. ")
         if gmm_options["var_boot"] == "quick"
             println("Quick bootstrap.\n")
         elseif gmm_options["var_boot"] == "slow"

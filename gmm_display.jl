@@ -2,6 +2,10 @@
 # Todo: how to handle (a) errors in certain runs, (b) lack of convergence
 function get_estimates(gmm_results; onestep=true)
 
+    if gmm_results["outcome"] == "skipped"
+        return gmm_results["theta_hat"]
+    end
+
     if onestep
         gmm_results_df = gmm_results["results_stage1"]
     else # two-step optimal

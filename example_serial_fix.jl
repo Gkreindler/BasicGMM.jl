@@ -40,6 +40,7 @@ include("gmm_display.jl")
     moments_gmm_loaded([1.0, 5.0], data_dict)
 
 ## GMM options
+    rootpath_output = "C:/temp/"
     gmm_options = Dict{String, Any}(
         "main_run_parallel" => false,
         "var_boot" => "quick",
@@ -47,7 +48,9 @@ include("gmm_display.jl")
         "boot_throw_exceptions" => true,
         "estimator" => "gmm1step",
         "fix_params" => Dict(1 => 1.0),
-        "subset_moms" => [1]
+        "subset_moms" => [1],
+        "rootpath_output" => rootpath_output,
+        "main_write_results_to_file" => 2
     )
 
 ## Initial conditions (matrix for multiple initial runs) and parameter box constraints

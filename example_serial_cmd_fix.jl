@@ -92,6 +92,7 @@ include("gmm_display.jl")
     gmm_options = Dict{String, Any}(
         "main_run_parallel" => false,
         "estimator" => "cmd",
+        "var_boot" => "slow",
         "param_names" => ["alpha", "sigma"]
     )
 
@@ -111,8 +112,8 @@ include("gmm_display.jl")
         theta0_boot=theta0_boot,
         theta_lower=theta_lower,
         theta_upper=theta_upper,
-        theta_fix=[1.4, nothing],
-        moms_subset=[1],
+        # theta_fix=[1.4, nothing],
+        # moms_subset=[1],
         omega=V,
 		gmm_options=gmm_options
 	)

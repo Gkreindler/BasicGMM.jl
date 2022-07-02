@@ -125,7 +125,7 @@ function curve_fit_wrapper(
     # save to file
 	if write_results_to_file == 2
 	    outputfile = string(individual_run_results_path,"gmm-stage1-run",idx,".csv")
-		CSV.write(outputfile, results_df)
+		CSV.write(outputfile, DataFrame(results_df))
 	end
 
 	return results_df
@@ -511,7 +511,9 @@ function bootstrap_2step(;
 					theta0_boot,
                     theta_lower,
                     theta_upper,
+                    theta_hat, # so that we can evaluate the new moment at old parameters
 					rootpath_boot_output,
+                    sample_data_fn=nothing,
 					boot_rng=nothing,
 					# run_parallel=false,          # currently, always should be false
 					write_results_to_file=false,
@@ -531,22 +533,25 @@ try
     # TODO: should also be able to use a boostrapping function
     # TODO: sample_data_fn(DATA::Any, boot_rng::RandomNumberSeed)
 
-	data_dict_boot = copy(data)
-    firstdatakey = first(sort(collect(keys(data_dict_boot))))
-	n_observations = size(data[firstdatakey], 1)
+    if isnothing(sample_data_fn)
+        data_dict_boot = copy(data)
+        firstdatakey = first(sort(collect(keys(data_dict_boot))))
+        n_observations = size(data[firstdatakey], 1)
 
-    boot_sample = StatsBase.sample(boot_rng, 1:n_observations, n_observations)
+        boot_sample = StatsBase.sample(boot_rng, 1:n_observations, n_observations)
 
-    for mykey in keys(data_dict_boot)
-
-        if length(size(data[mykey])) == 1
-            data_dict_boot[mykey] = data[mykey][boot_sample]
-        elseif length(size(data[mykey])) == 2
-            data_dict_boot[mykey] = data[mykey][boot_sample, :]
-        end
-
+        for mykey in keys(data_dict_boot)
+            if length(size(data[mykey])) == 1
+                data_dict_boot[mykey] = data[mykey][boot_sample]
+            elseif length(size(data[mykey])) == 2
+                data_dict_boot[mykey] = data[mykey][boot_sample, :]
+            end
+        end	
+    else
         
-    end	
+        # apply the provided function
+        data_dict_boot = sample_data_fn(data, boot_rng)
+    end
 
 ## define the moment function with Boostrap Data
 	momfn_loaded = theta -> momfn(theta, data_dict_boot)
@@ -558,7 +563,7 @@ try
 			theta_lower=theta_lower,
 			theta_upper=theta_upper,
 			run_parallel=false,
-			results_dir_path="",
+			results_dir_path=rootpath_boot_output,
 			write_results_to_file=write_results_to_file, ## TODO: do what here?
 			show_trace=show_trace,
 			maxIter=maxIter,
@@ -566,7 +571,9 @@ try
             show_theta=show_theta,
 			show_progress=false)
 
-    # pprint(boot_result)
+    
+    # evaluate new boot moment function at the old parameter values
+    boot_result["mom_at_theta_hat"] = momfn_loaded(theta_hat)
 
     boot_result["boot_run_idx"] = boot_run_idx
     if haskey(boot_result, "results_stage1")
@@ -833,6 +840,7 @@ function run_gmm(;
         omega=nothing, # nothing, function or matrix
         theta_fix=nothing,
         moms_subset=nothing,
+        sample_data_fn=nothing, # function for slow bootstrapping
 		gmm_options=nothing,
 	)
 
@@ -1030,7 +1038,8 @@ function run_gmm(;
     show_progress && println("Starting main estimation")
 
     # TODO: add "use_unconverged_results" option
-    full_results["gmm_main_results"] = gmm_2step(
+    if gmm_options["run_main"] 
+        full_results["gmm_main_results"] = gmm_2step(
             momfn_loaded    =momfn_loaded,
 
             theta0  =theta0,
@@ -1052,7 +1061,13 @@ function run_gmm(;
             show_trace   =gmm_options["main_show_trace"],
             show_theta      =gmm_options["main_show_theta"],
             show_progress   =show_progress)
-
+    
+    else
+        full_results["gmm_main_results"] = Dict(
+            "outcome" => "skipped",
+            "theta_hat" => vec(theta0)
+        )
+    end
     ## Asymptotic Variance
     if (gmm_options["var_asy"] || gmm_options["var_boot"] == "quick") && full_results["gmm_main_results"]["outcome"] != "fail"
 
@@ -1184,7 +1199,7 @@ function run_gmm(;
         # Define moment function for bootstrap -- target moment value at estimated theta
         mom_at_theta_hat = mean(momfn_loaded(theta_hat), dims=1)
 
-        momfn_boot = (mytheta, mydata_dict) -> (momfn(mytheta, mydata_dict) .- mom_at_theta_hat)
+        momfn_boot = (mytheta, mydata_dict) -> (momfn3(mytheta, mydata_dict) .- mom_at_theta_hat)
 
         # one random number generator per bootstrap run
         current_rng = MersenneTwister(123);
@@ -1208,6 +1223,7 @@ function run_gmm(;
         boot_folders = Vector{String}(undef, gmm_options["boot_n_runs"])
         for i=1:gmm_options["boot_n_runs"]
             boot_folders[i] = string(gmm_options["rootpath_boot_output"], "boot_run_", i, "/")
+            isdir(boot_folders[i]) || mkdir(boot_folders[i])
         end
 
         # Run bootstrap
@@ -1223,7 +1239,9 @@ function run_gmm(;
                         theta0_boot=theta0_boot,
                         theta_lower=theta_lower,
                         theta_upper=theta_upper,
-                        rootpath_boot_output="",
+                        theta_hat=theta_hat,
+                        rootpath_boot_output=boot_folders[idx],
+                        sample_data_fn=sample_data_fn,
                         boot_rng=boot_rngs[idx],
                         write_results_to_file=gmm_options["boot_write_results_to_file"],
                         maxIter=gmm_options["boot_maxIter"],
@@ -1239,12 +1257,13 @@ function run_gmm(;
             for boot_run_idx=1:boot_n_runs
                 boot_results[boot_run_idx] = bootstrap_2step(
                         boot_run_idx=boot_run_idx,
-                        momfn=momfn,
+                        momfn=momfn_boot,
                         data=data,
                         theta0_boot=theta0_boot,
                         theta_lower=theta_lower,
                         theta_upper=theta_upper,
-                        rootpath_boot_output="",
+                        rootpath_boot_output=boot_folders[boot_run_idx],
+                        sample_data_fn=sample_data_fn,
                         boot_rng=boot_rngs[boot_run_idx],
                         write_results_to_file=gmm_options["boot_write_results_to_file"],
                         maxIter=gmm_options["boot_maxIter"],
@@ -1257,6 +1276,11 @@ function run_gmm(;
             end
         end
         show_progress && println()
+
+        # Save ALL boot results to single file for easy use
+        if gmm_options["boot_write_results_to_file"] > 0
+            jldsave(gmm_options["rootpath_boot_output"] * "bootstrap_results.jld2"; boot_results)
+        end
 
         full_results["gmm_boot_results"] = boot_results
 

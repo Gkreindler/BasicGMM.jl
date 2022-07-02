@@ -838,7 +838,9 @@ function run_gmm(;
 
 ## make local copy and run checks
     gmm_options = copy(gmm_options)
-    omega = copy(omega)
+    if ~isnothing(omega)
+        omega = copy(omega)
+    end
 
     # runchecks(theta0, theta0_boot, theta_upper, theta_lower, gmm_options)
 
@@ -1101,7 +1103,11 @@ function run_gmm(;
         if gmm_options["estimator"] == "gmm1step"
             # (G'WG)⁻¹G' W Ω W G(G'WG)⁻¹
 
-            vcov_fn = omega1
+            if isnothing(omega1)
+                vcov_fn = vcov_gmm_iid
+            else
+                vcov_fn = omega1
+            end
             theta_hat_stage1 = full_results["gmm_main_results"]["theta_hat_stage1"]
             Ω = vcov_fn(theta_hat_stage1, momfn_loaded)
 

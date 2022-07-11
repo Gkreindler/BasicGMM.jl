@@ -27,7 +27,7 @@ include("gmm_display.jl")
     true_theta = [1.5, 10.0]
 
     rng = MersenneTwister(123);
-    data_dict, model_params = generate_data_logit(N=100, rng=rng)
+    data_dict, model_params = generate_data_logit(N=500, rng=rng)
 
 
 ## Define moments function with certain parameters already "loaded"
@@ -42,10 +42,14 @@ include("gmm_display.jl")
 ## GMM options
     gmm_options = Dict{String, Any}(
         "main_run_parallel" => false,
-        "var_boot" => "quick",
+        "var_boot" => "slow",
         "boot_n_runs" => 100,
         "boot_throw_exceptions" => true,
-        "estimator" => "gmm1step"
+        "estimator" => "gmm1step",
+        "main_write_results_to_file" => 2,
+        "boot_write_results_to_file" => 1,
+        "rootpath_output" => "G:/My Drive/optnets/analysis/temp/"
+        
     )
 
 ## Initial conditions (matrix for multiple initial runs) and parameter box constraints
@@ -58,7 +62,7 @@ include("gmm_display.jl")
     theta_upper = [Inf, Inf]
 
 ## Run GMM
-    gmm_results = run_gmm(momfn=moments_gmm_loaded,
+    main_results, main_df, boot_results, boot_df = run_gmm(momfn=moments_gmm_loaded,
 		data=data_dict,
 		theta0=theta0,
         theta0_boot=theta0_boot,
@@ -68,4 +72,4 @@ include("gmm_display.jl")
 	)
 
 ## print model_results
-    print_results(gmm_results)
+    print_results(main_results=main_results, boot_results=boot_results, boot_df=boot_df)

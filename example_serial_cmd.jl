@@ -92,27 +92,31 @@ include("gmm_display.jl")
     gmm_options = Dict{String, Any}(
         "main_run_parallel" => false,
         "estimator" => "cmd",
-        "cmd_omega" => V  # variance-coveriance matrix
+        "cmd_omega" => V,  # variance-coveriance matrix
+        "main_write_results_to_file" => 2,
+        "rootpath_output" => "G:/My Drive/optnets/analysis/temp/"
     )
 
 ## Initial conditions (matrix for multiple initial runs) and parameter box constraints
     main_n_initial_cond = 20
     boot_n_initial_cond = 20
 
-    theta0 = repeat([1.0 5.0], main_n_initial_cond, 1)
-    theta0_boot = repeat([1.0 5.0], boot_n_initial_cond, 1)
     theta_lower = [0.0, 0.0]
     theta_upper = [Inf, Inf]
 
+    theta0      = random_initial_conditions([1.0 5.0], theta_lower, theta_upper, main_n_initial_cond)
+    theta0_boot = random_initial_conditions([1.0 5.0], theta_lower, theta_upper, main_n_initial_cond)
+
 ## Run GMM
-    gmm_results = run_gmm(momfn=moments_gmm_loaded,
+    gmm_results, results_df = run_gmm(momfn=moments_gmm_loaded,
 		data=data_dict,
 		theta0=theta0,
         theta0_boot=theta0_boot,
         theta_lower=theta_lower,
         theta_upper=theta_upper,
+        omega=V,
 		gmm_options=gmm_options
 	)
 
 ## print model_results
-    print_results(gmm_results)
+    print_results(gmm_results, results_df)

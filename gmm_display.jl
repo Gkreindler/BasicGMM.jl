@@ -1,27 +1,31 @@
 
 # Todo: how to handle (a) errors in certain runs, (b) lack of convergence
-function get_estimates(gmm_results; onestep=true)
+# function get_estimates(main_results, main_results_df; onestep=true)
 
-    if gmm_results["outcome"] == "skipped"
-        return gmm_results["theta_hat"]
-    end
+#     if main_results["outcome"] == "skipped"
+#         return main_results["theta_hat"]
+#     end
 
-    if onestep
-        gmm_results_df = gmm_results["results_stage1"]
-    else # two-step optimal
-        gmm_results_df = gmm_results["results_stage2"]
-    end
+#     if onestep
+#         main_results_df = main_results["results_stage1"]
+#     else # two-step optimal
+#         main_results_df = main_results["results_stage2"]
+#     end
 
-    estimates_row = gmm_results_df[gmm_results_df.is_optimum, :]
-    @assert size(estimates_row)[1] == 1
+#     estimates_row = main_results_df[main_results_df.is_optimum, :]
+#     @assert size(estimates_row)[1] == 1
 
-    return estimates_row[1, r"param_"] |> Vector
-end
+#     return estimates_row[1, r"param_"] |> Vector
+# end
 
-function print_results(gmm_results; ci_level=2.5)
+function print_results(;
+            main_results, 
+            boot_results=nothing, 
+            boot_df=nothing,
+            ci_level=2.5)
 
     # prep
-    gmm_options = gmm_results["gmm_options"]
+    gmm_options = main_results["gmm_options"]
 
     printstyled("======================================================================\n", color=:yellow)
 
@@ -35,38 +39,38 @@ function print_results(gmm_results; ci_level=2.5)
         println(" Classical Minimum Distance with Optimal Weighting Matrix\n")
     end
     
-    n_moms_estim = gmm_results["n_moms"]
-    if ~isnothing(gmm_results["moms_subset"])    
-        n_moms_dropd = gmm_results["n_moms_full"] - gmm_results["n_moms"]
+    n_moms_estim = main_results["n_moms"]
+    if ~isnothing(main_results["moms_subset"])    
+        n_moms_dropd = main_results["n_moms_full"] - main_results["n_moms"]
         
         print(" # moments: ", n_moms_estim, " (plus ", n_moms_dropd, " not used). ")
     else
         print(" # moments: ", n_moms_estim, ". ")
     end
     
-    n_params = gmm_results["n_params"]
-    if ~isnothing(gmm_results["theta_fix"])
+    n_params = main_results["n_params"]
+    if ~isnothing(main_results["theta_fix"])
         
-        n_params_estimated = length(findall(isnothing, gmm_results["theta_fix"]))
+        n_params_estimated = length(findall(isnothing, main_results["theta_fix"]))
 
         print("# parameters: ", n_params_estimated, " (plus ", n_params - n_params_estimated, " fixed). ")
     else
         print("# parameters: ", n_params, "). ")
     end
     
-    println("# observations: ", gmm_results["n_observations"], ".\n")
+    println("# observations: ", main_results["n_observations"], ".\n")
 
-    if ~isnothing(gmm_results["moms_subset"])
-        println(" Estimation uses moments: ", gmm_results["moms_subset"], "\n")
+    if ~isnothing(main_results["moms_subset"])
+        println(" Estimation uses moments: ", main_results["moms_subset"], "\n")
     end
 
-    n_params = gmm_results["n_params"]
-    if isnothing(gmm_results["theta_fix"])
+    n_params = main_results["n_params"]
+    if isnothing(main_results["theta_fix"])
         idxs_fixed = []
 
         smaller_idxs = 1:n_params
     else
-        theta_fix = gmm_results["theta_fix"]
+        theta_fix = main_results["theta_fix"]
         idxs_fixed = findall(x -> ~isnothing(x), theta_fix)
         idxs_estim = findall(isnothing, theta_fix)
 
@@ -76,8 +80,8 @@ function print_results(gmm_results; ci_level=2.5)
     end
 
     # parameter estimates
-    main_results = gmm_results["gmm_main_results"]
-    if main_results["outcome"] != "failed"
+    results = main_results["results"]
+    if results["outcome"] != "failed"
 
         # header
         if isnothing(gmm_options["param_names"])
@@ -94,7 +98,7 @@ function print_results(gmm_results; ci_level=2.5)
             println(l1 * "------------------------------------------------------------------------")
         end
 
-        for i=1:gmm_results["n_params"]
+        for i=1:main_results["n_params"]
 
             output_line = " " * string(i) * ") "
             
@@ -103,14 +107,14 @@ function print_results(gmm_results; ci_level=2.5)
             end
 
             if i in idxs_fixed
-                theta = gmm_results["theta_fix"][i]
+                theta = main_results["theta_fix"][i]
                 output_line *= " " * rpad(@sprintf("%g", theta), 20, " ") * "(fixed parameter)"
             else
 
                 j = smaller_idxs[i]
 
                 # estimate
-                theta = main_results["theta_hat"][j]
+                theta = results["theta_hat"][j]
                 output_line *= " " * rpad(@sprintf("%g", theta), 20, " ") 
 
                 # asymptotic confidence interval
@@ -118,7 +122,7 @@ function print_results(gmm_results; ci_level=2.5)
                     z_low  = quantile(Normal(), ci_level / 100.0)
                     z_high = quantile(Normal(), 1.0 - ci_level / 100.0)
 
-                    se = gmm_results["asy_stderr"][j]
+                    se = main_results["asy_stderr"][j]
                     asy_cilow = theta  .+ z_low  .* se
                     asy_cihigh = theta .+ z_high .* se
 
@@ -130,7 +134,7 @@ function print_results(gmm_results; ci_level=2.5)
                 if ~(isnothing(gmm_options["var_boot"]) || (gmm_options["var_boot"] == "")) 
                     ci_levels = [ci_level, 100 - ci_level]
 
-                    boot_vec = [boot_result["theta_hat"][j] for boot_result=gmm_results["gmm_boot_results"]]
+                    boot_vec = [boot_result["theta_hat"][j] for boot_result=boot_results]
 
                     # ! skipping missing!
                     boot_vec = skipmissing(boot_vec) |> collect
@@ -158,9 +162,9 @@ function print_results(gmm_results; ci_level=2.5)
     end
 
     ### Optimization info:
-    print(" Number of initial conditions: ", gmm_results["main_n_initial_cond"], " (main estimation)")
+    print(" Number of initial conditions: ", main_results["main_n_initial_cond"], " (main estimation)")
     if gmm_options["var_boot"] == "slow"
-        println(", ", gmm_results["boot_n_initial_cond"], " (bootstrap)")
+        println(", ", main_results["boot_n_initial_cond"], " (bootstrap)")
     else
         println()
     end
@@ -170,15 +174,15 @@ function print_results(gmm_results; ci_level=2.5)
         print(" Main estimation optimization: ")
     end
 
-    if gmm_results["gmm_main_results"]["outcome"] == "success"
+    if main_results["results"]["outcome"] == "success"
         printstyled("All iterations converged.\n", color=:green)
     else
         printstyled(" Some iterations did not converge:\n", color=:orange)
-        for detail_outcome=gmm_results["outcome_stage1_detail"]
+        for detail_outcome=results["outcome_stage1_detail"]
             printstyled(" Stage 1: " * detail_outcome, color=:orange)
         end
-        if haskey(gmm_results, "outcome_stage2_detail")
-            for detail_outcome=gmm_results["outcome_stage2_detail"]
+        if haskey(results, "outcome_stage2_detail")
+            for detail_outcome=results["outcome_stage2_detail"]
                 printstyled(" Stage 2: " * detail_outcome, color=:orange)
             end
         end
@@ -189,11 +193,11 @@ function print_results(gmm_results; ci_level=2.5)
         print(" Bootstrap estimation optimization: ")
 
         # TODO: handle failed runs
-        boot_df = [boot_result["results_stage1"] for boot_result=gmm_results["gmm_boot_results"]]
-        boot_df = vcat(boot_df...)
+        # boot_df = [boot_result["results_stage1"] for boot_result=boot_results]
+        # boot_df = vcat(boot_df...)
 
         if gmm_options["2step"]
-            boot_df2 = [boot_result["results_stage2"] for boot_result=gmm_results["gmm_boot_results"]]
+            boot_df2 = [boot_result["results_stage2"] for boot_result=boot_results]
             boot_df2 = vcat(boot_df2...)
             boot_df = vcat(boot_df, boot_df2)
         end

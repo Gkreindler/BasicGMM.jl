@@ -92,7 +92,6 @@ include("gmm_display.jl")
     gmm_options = Dict{String, Any}(
         "main_run_parallel" => false,
         "estimator" => "cmd",
-        "cmd_omega" => V,  # variance-coveriance matrix
         "main_write_results_to_file" => 2,
         "rootpath_output" => "G:/My Drive/optnets/analysis/temp/"
     )

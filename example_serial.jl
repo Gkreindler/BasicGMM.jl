@@ -56,10 +56,11 @@ include("gmm_display.jl")
     main_n_initial_cond = 20
     boot_n_initial_cond = 20
 
-    theta0 = repeat([1.0 5.0], main_n_initial_cond, 1)
-    theta0_boot = repeat([1.0 5.0], boot_n_initial_cond, 1)
     theta_lower = [0.0, 0.0]
     theta_upper = [Inf, Inf]
+
+    theta0      = random_initial_conditions([1.0 5.0], theta_lower, theta_upper, main_n_initial_cond)
+    theta0_boot = random_initial_conditions([1.0 5.0], theta_lower, theta_upper, main_n_initial_cond)
 
 ## Run GMM
     main_results, main_df, boot_results, boot_df = run_gmm(momfn=moments_gmm_loaded,

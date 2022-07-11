@@ -61,24 +61,30 @@ end
 
 ## GMM options
     gmm_options = Dict{String, Any}(
+        "estimator" => "gmm1step",
         "main_run_parallel" => true,
         "var_boot" => "slow",
         "boot_n_runs" => 100,
         "boot_run_parallel" => true,
-        "boot_throw_exceptions" => true
+        "boot_throw_exceptions" => true,
+
+        "main_write_results_to_file" => 2,
+        "boot_write_results_to_file" => 1,
+        "rootpath_output" => "G:/My Drive/optnets/analysis/temp/"
     )
 
 ## Initial conditions (matrix for multiple initial runs) and parameter box constraints
     main_n_initial_cond = 100
     boot_n_initial_cond = 100
 
-    theta0 = repeat([1.0 5.0], main_n_initial_cond, 1)
-    theta0_boot = repeat([1.0 5.0], boot_n_initial_cond, 1)
     theta_lower = [0.0, 0.0]
     theta_upper = [Inf, Inf]
 
+    theta0      = random_initial_conditions([1.0 5.0], theta_lower, theta_upper, main_n_initial_cond)
+    theta0_boot = random_initial_conditions([1.0 5.0], theta_lower, theta_upper, main_n_initial_cond)
+
 ## Run GMM
-    gmm_results = run_gmm(momfn=moments_gmm_loaded,
+main_results, main_df, boot_results, boot_df = run_gmm(momfn=moments_gmm_loaded,
 		data=data_dict,
 		theta0=theta0,
         theta0_boot=theta0_boot,
@@ -88,5 +94,5 @@ end
 	)
 
 ## print model_results
-    print_results(gmm_results)
+    print_results(main_results=main_results, boot_results=boot_results, boot_df=boot_df)
 

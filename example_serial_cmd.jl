@@ -108,7 +108,7 @@ include("gmm_display.jl")
     theta0_boot = random_initial_conditions([1.0 5.0], theta_lower, theta_upper, main_n_initial_cond)
 
 ## Run GMM
-    gmm_results, results_df = run_gmm(momfn=moments_gmm_loaded,
+    main_results, main_df, boot_results, boot_df = run_gmm(momfn=moments_gmm_loaded,
 		data=data_dict,
 		theta0=theta0,
         theta0_boot=theta0_boot,
@@ -119,4 +119,4 @@ include("gmm_display.jl")
 	)
 
 ## print model_results
-    print_results(gmm_results, results_df)
+    print_results(main_results=main_results, boot_results=boot_results, boot_df=boot_df)

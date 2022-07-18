@@ -165,7 +165,7 @@ function gmm_2step(;
 			theta0,
 			theta_lower,
 			theta_upper,
-            vcov_fn=vcov_gmm_iid,
+            vcov_fn=nothing,
 			run_parallel=true,
             two_step=false,
 			n_moms=nothing,
@@ -182,6 +182,10 @@ function gmm_2step(;
 ## Basic checks
     if write_results_to_file ∉ [0, 1, 2]
         error("write_results_to_file should be 0, 1, or 2")
+    end
+
+    if isnothing(vcov_fn)
+        vcov_fn = vcov_gmm_iid
     end
 
 ## Store estimation results here
@@ -307,7 +311,7 @@ function gmm_2step(;
     all_results_df = vcat(DataFrame.(all_results_df)...)
     
 	# pick smallest objective value (among those that have converged) 
-    all_results_df.obj_vals_converged = all_results_df.obj_vals
+    all_results_df.obj_vals_converged = copy(all_results_df.obj_vals)
 
     # TODO: allow iterations that have not converged (+ warning in docs)
     # if not converged, replace objective value with +Infinity
@@ -443,36 +447,36 @@ function gmm_2step(;
     # one df with all results
     all_results2_df = vcat(DataFrame.(all_results2_df)...)
 
-    rename!(all_results2_df,
-        :obj_vals => :obj_vals_step2,
-        :opt_converged => :opt_converged_step2,
-        :opt_runtime => :opt_runtime_step2)
+    # rename!(all_results2_df,
+    #     :obj_vals => :obj_vals_step2,
+    #     :opt_converged => :opt_converged_step2,
+    #     :opt_runtime => :opt_runtime_step2)
     
-    for i=1:n_params
-        rename!(all_results2_df, "param_" * string(i) => "param_" * string(i) * "_step2")
-    end
+    # for i=1:n_params
+    #     rename!(all_results2_df, "param_" * string(i) => "param_" * string(i) * "_step2")
+    # end
 
     # pick smallest objective value (among those that have converged) 
-    all_results2_df.obj_vals_converged_step2 = all_results2_df.obj_vals_step2
+    all_results2_df.obj_vals_converged = copy(all_results2_df.obj_vals)
 
     # TODO: allow iterations that have not converged (+ warning in docs)
     # if not converged, replace objective value with +Infinity
-    all_results2_df[.~all_results2_df.opt_converged_step2, :obj_vals_converged_step2] .= Inf
+    all_results2_df[.~all_results2_df.opt_converged, :obj_vals_converged] .= Inf
 
-    if minimum(all_results2_df.obj_vals_converged_step2) == Inf
+    if minimum(all_results2_df.obj_vals_converged) == Inf
         gmm_results["outcome_stage2"] = gmm_results["outcome"] = "fail"
         gmm_results["outcome_stage2_detail"] = ["none of the iterations converged"]
 
         return gmm_results
 
-    elseif any(.~all_results2_df.opt_converged_step2)
+    elseif any(.~all_results2_df.opt_converged)
 
-        n_converged = sum(all_results2_df.opt_converged_step2)
+        n_converged = sum(all_results2_df.opt_converged)
 
         gmm_results["outcome_stage2"] = "some_errors"
         gmm_results["outcome_stage2_detail"] =[string(n_converged) * "/" * string(n_theta0) * " iterations converged"]
 
-        if minimum(all_results2_df.obj_vals_converged_step2) > minimum(all_results2_df.obj_vals_step2)
+        if minimum(all_results2_df.obj_vals_converged) > minimum(all_results2_df.obj_vals)
             push!(gmm_results["outcome_stage2_detail"], "minimum objective value occurs in iteration that did not converge")
         end
 
@@ -482,12 +486,12 @@ function gmm_2step(;
     end
 
 	# pick best
-	idx_optimum = argmin(all_results2_df.obj_vals_converged_step2)
-	all_results2_df.is_optimum_step2 = ((1:n_theta0) .== idx_optimum)
+	idx_optimum = argmin(all_results2_df.obj_vals_converged)
+	all_results2_df.is_optimum = ((1:n_theta0) .== idx_optimum)
 	
     # select just the estimated parameters
-    theta_hat_stage2 = gmm_results["theta_hat_stage2"] = all_results2_df[idx_optimum, r"param_[0-9]*_step2"] |> collect
-	obj_val_stage2 = all_results2_df[idx_optimum, :obj_vals_step2]
+    theta_hat_stage2 = gmm_results["theta_hat_stage2"] = all_results2_df[idx_optimum, r"param_[0-9]*"] |> collect
+	obj_val_stage2 = all_results2_df[idx_optimum, :obj_vals]
 
     gmm_results["theta_hat"] = gmm_results["theta_hat_stage2"]
 
@@ -506,7 +510,11 @@ function gmm_2step(;
         gmm_results["outcome"] = "some_errors"
     end
 
-    full_df = hcat(theta0_df, all_results_df, all_results2_df)
+    full1_df = hcat(theta0_df, all_results_df)
+    full2_df = hcat(theta0_df, all_results2_df)
+    full1_df[!,:stage] .= 1
+    full2_df[!,:stage] .= 2
+    full_df = vcat(full1_df, full2_df)
 
 	show_progress && println("GMM => complete")
 
@@ -825,49 +833,32 @@ function compute_jacobian(;
 end
 
 
-"""
-    run_gmm(; momfn, data, theta0, theta0_boot=nothing, theta_upper=nothing, theta_lower=nothing, gmm_options=nothing)
 
-Wrapper for GMM/CMD with multiple initial conditions and optional bootstrap inference.
-
-# Arguments
-- momfn: the moment function momfn(theta, data)
-- data: any object
-- theta0: matrix of size main_n_start_pts x n_params, main_n_start_pts = gmm_options["main_n_start_pts] and n_params is length of theta
-- theta0_boot: matrix of size (boot_n_start_pts * boot_n_runs) x n_params
-- theta_lower: vector of lower bounds (default is -Inf)
-- theta_upper: vector of upper bounds (default is +Inf)
-
-Note: all arguments must be named (indicated by the ";" at the start), meaning calling [1] will work but [2] will not:
-[1] run_gmm(momfn=my_moment_function, data=mydata, theta0=my_theta0)
-[2] run_gmm(my_moment_function, mydata, my_theta0)
-"""
-
-function run_gmm(;
-		momfn,
-		data,
-		theta0, 
-        theta0_boot=nothing,
+function run_checks(;
+        momfn,
+        data,
+        theta0, 
         theta_upper=nothing, 
         theta_lower=nothing,
         W=nothing,
         omega=nothing, # nothing, function or matrix
         theta_fix=nothing,
         moms_subset=nothing,
-        sample_data_fn=nothing, # function for slow bootstrapping
-		gmm_options=nothing,
-	)
+        gmm_options=nothing,
+        theta0_boot=nothing,    # only add this when running from run_inference
+    )
 
-## make local copy and run checks
+    ## make local copy and run checks
     gmm_options = copy(gmm_options)
     if ~isnothing(omega)
         omega = copy(omega)
     end
 
     if isnothing(omega) && (get(gmm_options, "estimator", "") == "cmd")
-        error("If using CMD must provide omega the var-covar of the moments")
+        error("If using CMD must provide omega = the var-covar of the moments")
     end
 
+    # TODO: to add?
     # runchecks(theta0, theta0_boot, theta_upper, theta_lower, gmm_options)
 
 ## Number of parameters
@@ -875,7 +866,7 @@ function run_gmm(;
     if isa(theta0, Vector)
         theta0 = Matrix(transpose(theta0))
     end
-    n_params = size(theta0)[2]
+    gmm_options["n_params"] = size(theta0)[2]
 
     # Default parameter bounds
     if isnothing(theta_lower) 
@@ -896,9 +887,6 @@ function run_gmm(;
         "estimator" => "gmm2step", #"gmm1step" or "gmm2step" or "cmd" or "cmd_optimal"
 
         # main gmm estimation
-		"run_main" 			=> true, # run main estimation? False if only want to run bootstrap
-		        # "main_n_theta0" => 1, # number of independent optimization runs with different initial conditions
-        # "main_Wstep1" => nothing,
         "normalize_weight_matrix" => false,
 
 		"main_write_results_to_file" => 0, # 0, 1 or 2, see definition in gmm_2step()
@@ -1005,27 +993,72 @@ function run_gmm(;
         W = diagm(ones(gmm_options["n_moms"]))
         @assert issymmetric(W)
 
-    elseif ~issymmetric(W)
+    elseif ~isnothing(W) && ~issymmetric(W)
         @warn "The provided weighting matrix W is not symmetric."
         W = Symmetric(W)
     end
 
 ## Number of initial conditions
+    # TODO: move this?
     main_n_initial_cond = size(theta0, 1)
-    if isnothing(theta0_boot)
-        boot_n_initial_cond = 0
-    else
-        boot_n_initial_cond = size(theta0_boot, 1)
-    end
+
+    return gmm_options, theta0, theta_lower, theta_upper, theta0_boot, momfn3, omega1, W
+end
 
 
+
+"""
+    run_estimation(; momfn, data, theta0, theta0_boot=nothing, theta_upper=nothing, theta_lower=nothing, gmm_options=nothing)
+
+Wrapper for GMM/CMD with multiple initial conditions and optional bootstrap inference.
+
+# Arguments
+- momfn: the moment function momfn(theta, data)
+- data: any object
+- theta0: matrix of size main_n_start_pts x n_params, main_n_start_pts = gmm_options["main_n_start_pts] and n_params is length of theta
+- theta0_boot: matrix of size (boot_n_start_pts * boot_n_runs) x n_params
+- theta_lower: vector of lower bounds (default is -Inf)
+- theta_upper: vector of upper bounds (default is +Inf)
+
+Note: all arguments must be named (indicated by the ";" at the start), meaning calling [1] will work but [2] will not:
+[1] run_estimation(momfn=my_moment_function, data=mydata, theta0=my_theta0)
+[2] run_estimation(my_moment_function, mydata, my_theta0)
+"""
+
+function run_estimation(;
+		momfn,
+		data,
+		theta0, 
+        theta_upper=nothing, 
+        theta_lower=nothing,
+        W=nothing,
+        omega=nothing, # nothing, function or matrix
+        theta_fix=nothing,
+        moms_subset=nothing,
+        # sample_data_fn=nothing, # function for slow bootstrapping
+		gmm_options=nothing
+	)
+
+
+## Run basic checks, fix parameters and subset moments (if applicable)
+    gmm_options, theta0, theta_lower, theta_upper, theta0_boot, momfn3, omega1, W = run_checks(
+            momfn=momfn,
+            data=data,
+            theta0=theta0,
+            theta_upper=theta_upper,
+            theta_lower=theta_lower,
+            W=W,
+            omega=omega,
+            theta_fix=theta_fix,
+            moms_subset=moms_subset,
+            gmm_options=gmm_options)
 
 ## Store estimation results here
     # store parameters and options
-    full_results = Dict{String, Any}(
+    est_results = Dict{String, Any}(
         "gmm_options" => gmm_options,
         "theta0" => theta0,
-        "theta0_boot" => theta0_boot,
+        # "theta0_boot" => theta0_boot,
         "theta_upper" => theta_upper,
         "theta_lower" => theta_lower,
         "W" => W,
@@ -1035,16 +1068,111 @@ function run_gmm(;
         "n_observations" => gmm_options["n_observations"],
         "n_moms" => gmm_options["n_moms"],
         "n_moms_full" => gmm_options["n_moms_full"],
-        "n_params" => n_params,
+        "n_params" => gmm_options["n_params"],
         "main_n_initial_cond" => main_n_initial_cond,
-        "boot_n_initial_cond" => boot_n_initial_cond
     )
-
     
+## Load data into moments function
+	momfn_loaded = theta -> momfn3(theta, data)
+
+## Run estimation: two-step GMM / CMD with optimal weighting matrix
+
+    gmm_options["show_progress"] && println("Starting main estimation")
+
+    # TODO: add "use_unconverged_results" option
+    est_results["results"], est_results_df  = gmm_2step(
+        momfn_loaded    =momfn_loaded,
+
+        theta0          =theta0,
+        theta_lower     =theta_lower,
+        theta_upper     =theta_upper,
+
+        two_step        =gmm_options["2step"],
+        Wstep1          =W,
+        normalize_weight_matrix=gmm_options["normalize_weight_matrix"],
+        vcov_fn         =omega,
+        
+        results_dir_path=gmm_options["rootpath_output"],
+        write_results_to_file=gmm_options["main_write_results_to_file"],
+        
+        run_parallel    =gmm_options["main_run_parallel"],
+        maxIter         =gmm_options["main_maxIter"],
+        time_limit      =gmm_options["main_time_limit"],
+
+        show_trace      =gmm_options["main_show_trace"],
+        show_theta      =gmm_options["main_show_theta"],
+        show_progress   =gmm_options["show_progress"])
+    
+
+    if gmm_options["main_write_results_to_file"] > 0
+        open(gmm_options["rootpath_output"] * "est_results.json" ,"w") do f
+            JSON.print(f, est_results, 4)
+        end
+
+        CSV.write(gmm_options["rootpath_output"] * "est_results_df.csv", est_results_df)
+    end
+
+    return est_results, est_results_df
+end
+
+
+function run_inference(;
+        momfn,
+		data,
+        theta0_boot=nothing,
+        theta_upper=nothing, 
+        theta_lower=nothing,
+        W=nothing,
+        omega=nothing, # nothing, function or matrix
+        theta_fix=nothing,
+        moms_subset=nothing,
+        sample_data_fn=nothing, # function for slow bootstrapping
+		gmm_options=nothing,
+        
+        est_results=nothing,     # dictionary with estimation results
+        est_results_path=nothing # path to JSON with estimation results
+        )
+
+## Get estimation results as a dictionary from JSON file
+    if isnothing(est_results)
+        est_results = JSON.parsefile(est_results_path)         
+    end
+
+## Run basic checks, fix parameters and subset moments (if applicable)
+gmm_options, theta0, theta_lower, theta_upper, theta0_boot, momfn3, omega1, W = run_checks(
+        momfn=momfn,
+        data=data,
+        theta0=theta0_boot,
+        theta0_boot=theta0_boot,
+        theta_upper=theta_upper,
+        theta_lower=theta_lower,
+        W=W,
+        omega=omega,
+        theta_fix=theta_fix,
+        moms_subset=moms_subset,
+        gmm_options=gmm_options)
+
+## Store estimation results here
+    # store parameters and options
+    # est_results = Dict{String, Any}(
+    #     "gmm_options" => gmm_options,
+    #     "theta0" => theta0,
+    #     "theta0_boot" => theta0_boot,
+    #     "theta_upper" => theta_upper,
+    #     "theta_lower" => theta_lower,
+    #     "W" => W,
+    #     "omega" => omega,
+    #     "theta_fix" => theta_fix,
+    #     "moms_subset" => moms_subset,
+    #     "n_observations" => gmm_options["n_observations"],
+    #     "n_moms" => gmm_options["n_moms"],
+    #     "n_moms_full" => gmm_options["n_moms_full"],
+    #     "n_params" => n_params,
+    #     "main_n_initial_cond" => main_n_initial_cond,
+    # )
 
     
 ## Misc
-    show_progress = gmm_options["show_progress"]
     
     boot_result_json = nothing
     boot_result_dfs  = nothing
@@ -1052,50 +1180,14 @@ function run_gmm(;
 ## Load data into moments function
 	momfn_loaded = theta -> momfn3(theta, data)
 
-## Run two-step GMM / CMD with optimal weighting matrix
-    # if gmm_options["run_main"]
-
-    show_progress && println("Starting main estimation")
-
-    # TODO: add "use_unconverged_results" option
-    if gmm_options["run_main"] 
-        full_results["results"], main_results_df  = gmm_2step(
-            momfn_loaded    =momfn_loaded,
-
-            theta0  =theta0,
-            theta_lower     =theta_lower,
-            theta_upper     =theta_upper,
-
-            two_step    = gmm_options["2step"],
-            Wstep1=W,
-            normalize_weight_matrix=gmm_options["normalize_weight_matrix"],
-            vcov_fn=omega,
-            
-            results_dir_path=gmm_options["rootpath_output"],
-            write_results_to_file=gmm_options["main_write_results_to_file"],
-            
-            run_parallel    =gmm_options["main_run_parallel"],
-            maxIter      =gmm_options["main_maxIter"],
-            time_limit   =gmm_options["main_time_limit"],
-
-            show_trace   =gmm_options["main_show_trace"],
-            show_theta      =gmm_options["main_show_theta"],
-            show_progress   =show_progress)
-    
-    else
-        full_results["results"] = Dict(
-            "outcome" => "skipped",
-            "theta_hat" => vec(theta0)
-        )
-    end
 
     ## Asymptotic Variance
-    if (gmm_options["var_asy"] || gmm_options["var_boot"] == "quick") && full_results["results"]["outcome"] != "fail"
+    if (gmm_options["var_asy"] || gmm_options["var_boot"] == "quick") && est_results["results"]["outcome"] != "fail"
 
-        show_progress && println("Computing asymptotic variance")
+        gmm_options["show_progress"] && println("Computing asymptotic variance")
 
         # Get estimated parameter vector
-        theta_hat = full_results["results"]["theta_hat"]
+        theta_hat = est_results["results"]["theta_hat"]
         
         # function that computes averaged moments
         mymomfunction_main_avg = theta -> mean(momfn_loaded(theta), dims=1)
@@ -1145,7 +1237,7 @@ function run_gmm(;
             else
                 vcov_fn = omega1
             end
-            theta_hat_stage1 = full_results["results"]["theta_hat_stage1"]
+            theta_hat_stage1 = est_results["results"]["theta_hat_stage1"]
             Ω = vcov_fn(theta_hat_stage1, momfn_loaded)
 
             W = Symmetric(W)
@@ -1156,16 +1248,16 @@ function run_gmm(;
 
         if gmm_options["estimator"] == "gmm2step"
             # W = Ω⁻¹ so the above simplifies to (G'WG)⁻¹
-            W = Symmetric(full_results["results"]["Wstep2"])
+            W = Symmetric(est_results["results"]["Wstep2"])
             V = inv(transpose(G) * W * G) 
         end
 
         # treat GMM and CMD differently
         n_observations = gmm_options["n_observations"]
 
-        full_results["G"] = G
-        full_results["asy_vcov"] = V / n_observations
-        full_results["asy_stderr"] = sqrt.(diag(V / n_observations))
+        est_results["G"] = G
+        est_results["asy_vcov"] = V / n_observations
+        est_results["asy_stderr"] = sqrt.(diag(V / n_observations))
 
         
         ### Quick bootstrap
@@ -1200,10 +1292,10 @@ function run_gmm(;
         # write to file?
         if gmm_options["main_write_results_to_file"] > 0
             outputfile = string(gmm_options["rootpath_output"], "asy_vcov.csv")
-            CSV.write(outputfile, Tables.table(full_results["asy_vcov"]), header=false)
+            CSV.write(outputfile, Tables.table(est_results["asy_vcov"]), header=false)
 
             outputfile = string(gmm_options["rootpath_output"], "jacobian.csv")
-            CSV.write(outputfile, Tables.table(full_results["G"]), header=false)
+            CSV.write(outputfile, Tables.table(est_results["G"]), header=false)
         end
 
     end
@@ -1211,7 +1303,7 @@ function run_gmm(;
 
 ## Run "slow" bootstrap where we re-run the minimization each time    
     if gmm_options["var_boot"] == "slow"
-        show_progress && println("Starting boostrap")
+        gmm_options["show_progress"] && println("Starting boostrap")
 
         if gmm_options["boot_write_results_to_file"] > 0
             rootpath_boot_output = gmm_options["rootpath_output"] * "boot/"
@@ -1219,7 +1311,7 @@ function run_gmm(;
         end
 
         # Get estimated parameter vector
-        theta_hat = theta_hat = full_results["results"]["theta_hat"]
+        theta_hat = est_results["results"]["theta_hat"]
 
         # Define moment function for bootstrap -- target moment value at estimated theta
         mom_at_theta_hat = mean(momfn_loaded(theta_hat), dims=1)
@@ -1230,9 +1322,9 @@ function run_gmm(;
         current_rng = MersenneTwister(123);
         boot_rngs = Vector{Any}(undef, gmm_options["boot_n_runs"])
 
-        show_progress && println("Creating random number generator for boot run:")
+        gmm_options["show_progress"] && println("Creating random number generator for boot run:")
         for i=1:gmm_options["boot_n_runs"]
-            show_progress && print(".")
+            gmm_options["show_progress"] && print(".")
             
             # increment and update "current" random number generator
             boot_rngs[i] = Future.randjump(current_rng, big(10)^20)
@@ -1241,7 +1333,7 @@ function run_gmm(;
             # can check that all these are different
             # print(boot_rngs[i])  
         end
-        show_progress && println(".")
+        gmm_options["show_progress"] && println(".")
 
         # Todo: what are folder options for boot? (similar to main?)
         # Create folders where we save estimation results
@@ -1254,7 +1346,8 @@ function run_gmm(;
         # Run bootstrap
         boot_n_runs = gmm_options["boot_n_runs"]
 
-        show_progress && println("Bootstrap runs:")
+        gmm_options["show_progress"] && println("Bootstrap runs:")
+
         if gmm_options["boot_run_parallel"]
             boot_results = pmap(
             idx -> bootstrap_2step(
@@ -1274,7 +1367,7 @@ function run_gmm(;
                         throw_exceptions=gmm_options["boot_throw_exceptions"],
                         show_trace=false,
                         show_theta=gmm_options["boot_show_theta"],
-                        show_progress=show_progress
+                        show_progress=gmm_options["show_progress"]
                     ), 1:boot_n_runs)
         else
 
@@ -1296,18 +1389,19 @@ function run_gmm(;
                         time_limit=gmm_options["boot_time_limit"],
                         throw_exceptions=gmm_options["boot_throw_exceptions"],
                         show_trace=false,
-                        show_progress=show_progress,
+                        show_progress=gmm_options["show_progress"],
                         show_theta=gmm_options["boot_show_theta"]
                     )
             end
         end
-        show_progress && println()
+        gmm_options["show_progress"] && println()
 
         # JSON and CSV with boot results
         boot_result_json = []
         boot_result_dfs = []
         for boot_result=boot_results
             mydict, mydf = boot_result
+            mydict["boot_n_initial_cond"] = size(theta0_boot, 1)
 
             push!(boot_result_json, mydict)
             push!(boot_result_dfs, mydf)
@@ -1325,13 +1419,5 @@ function run_gmm(;
 
     end # end
 
-    if gmm_options["main_write_results_to_file"] > 0
-        open(gmm_options["rootpath_output"] * "results.json" ,"w") do f
-            JSON.print(f, full_results, 4)
-        end
-
-        CSV.write(gmm_options["rootpath_output"] * "results_df.csv", main_results_df)
-    end
-
-    return full_results, main_results_df, boot_result_json, boot_result_dfs
+    return boot_result_json, boot_result_dfs
 end

@@ -5,6 +5,7 @@ using StatsBase
 using Distributions
 using DataFrames
 using CSV
+using JSON
 using Random
 using PrettyPrint
 using Printf
@@ -27,7 +28,7 @@ include("gmm_display.jl")
     true_theta = [1.5, 10.0]
 
     rng = MersenneTwister(123);
-    data_dict, model_params = generate_data_logit(N=500, rng=rng)
+    data_dict, model_params = generate_data_logit(N=100, rng=rng)
 
 
 ## Define moments function with certain parameters already "loaded"
@@ -43,33 +44,43 @@ include("gmm_display.jl")
     gmm_options = Dict{String, Any}(
         "main_run_parallel" => false,
         "var_boot" => "slow",
-        "boot_n_runs" => 100,
+        "boot_n_runs" => 10,
         "boot_throw_exceptions" => true,
         "estimator" => "gmm1step",
         "main_write_results_to_file" => 2,
         "boot_write_results_to_file" => 1,
         "rootpath_output" => "G:/My Drive/optnets/analysis/temp/"
-        
     )
 
 ## Initial conditions (matrix for multiple initial runs) and parameter box constraints
     main_n_initial_cond = 20
     boot_n_initial_cond = 20
 
-    theta0 = repeat([1.0 5.0], main_n_initial_cond, 1)
-    theta0_boot = repeat([1.0 5.0], boot_n_initial_cond, 1)
     theta_lower = [0.0, 0.0]
     theta_upper = [Inf, Inf]
 
-## Run GMM
-    main_results, main_df, boot_results, boot_df = run_gmm(momfn=moments_gmm_loaded,
-		data=data_dict,
-		theta0=theta0,
-        theta0_boot=theta0_boot,
-        theta_lower=theta_lower,
-        theta_upper=theta_upper,
-		gmm_options=gmm_options
-	)
+    theta0      = random_initial_conditions([1.0 5.0], theta_lower, theta_upper, main_n_initial_cond)
+    theta0_boot = random_initial_conditions([1.0 5.0], theta_lower, theta_upper, boot_n_initial_cond)
+
+## Run estimation
+    est_results, est_results_df = run_estimation(
+                momfn=moments_gmm_loaded,
+                data=data_dict,
+                theta0=theta0,
+                theta_lower=theta_lower,
+                theta_upper=theta_upper,
+                gmm_options=gmm_options)
+
+### Run inference
+    boot_results, boot_df = run_inference(
+                momfn=moments_gmm_loaded,
+                data=data_dict,
+                theta0_boot=theta0_boot,
+                theta_lower=theta_lower,
+                theta_upper=theta_upper,
+                sample_data_fn=nothing,
+                gmm_options=gmm_options,
+                est_results=est_results)
 
 ## print model_results
-    print_results(main_results=main_results, boot_results=boot_results, boot_df=boot_df)
+    print_results(est_results=est_results, boot_results=boot_results, boot_df=boot_df)

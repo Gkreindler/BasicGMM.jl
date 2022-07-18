@@ -321,7 +321,15 @@ function gmm_2step(;
         gmm_results["outcome_stage1"] = gmm_results["outcome"] = "fail"
         gmm_results["outcome_stage1_detail"] = ["none of the iterations converged"]
 
-        return gmm_results
+        empty_df = DataFrame()
+
+        if write_results_to_file > 0
+            open(results_dir_path * "est_results.json" ,"w") do f
+                JSON.print(f, gmm_results, 4)
+            end
+        end
+
+        return gmm_results, empty_df
 
     elseif any(.~all_results_df.opt_converged)
 
@@ -362,6 +370,15 @@ function gmm_2step(;
         full_df = hcat(theta0_df, all_results_df)
 
         gmm_results["theta_hat"] = gmm_results["theta_hat_stage1"]
+
+        if write_results_to_file > 0
+            open(results_dir_path * "est_results.json" ,"w") do f
+                JSON.print(f, gmm_results, 4)
+            end
+    
+            CSV.write(results_dir_path * "est_results_df.csv", full_df)
+        end
+
         return gmm_results, full_df
     end
 
@@ -467,7 +484,15 @@ function gmm_2step(;
         gmm_results["outcome_stage2"] = gmm_results["outcome"] = "fail"
         gmm_results["outcome_stage2_detail"] = ["none of the iterations converged"]
 
-        return gmm_results
+        empty_df = DataFrame()
+
+        if write_results_to_file > 0
+            open(results_dir_path * "est_results.json" ,"w") do f
+                JSON.print(f, gmm_results, 4)
+            end
+        end
+
+        return gmm_results, empty_df
 
     elseif any(.~all_results2_df.opt_converged)
 
@@ -516,6 +541,14 @@ function gmm_2step(;
     full2_df[!,:stage] .= 2
     full_df = vcat(full1_df, full2_df)
 
+    if write_results_to_file > 0
+        open(results_dir_path * "est_results.json" ,"w") do f
+            JSON.print(f, gmm_results, 4)
+        end
+
+        CSV.write(results_dir_path * "est_results_df.csv", full_df)
+    end
+
 	show_progress && println("GMM => complete")
 
     return gmm_results, full_df
@@ -533,13 +566,17 @@ function bootstrap_2step(;
                     theta_lower,
                     theta_upper,
                     theta_hat, # so that we can evaluate the new moment at old parameters
-					rootpath_boot_output,
                     sample_data_fn=nothing,
 					boot_rng=nothing,
 					# run_parallel=false,          # currently, always should be false
-					write_results_to_file=false,
+
+                    overwrite_existing,
+					rootpath_boot_output,
+					write_results_to_file=0,
+
 					maxIter=100,
 					time_limit=-1,
+
                     show_trace=false,
 					throw_exceptions=true,
                     show_theta=false,
@@ -548,6 +585,26 @@ function bootstrap_2step(;
 
 try
 	show_progress && print(".")
+
+    # if result files already exist, do not run again:
+    boot_results_path = rootpath_boot_output * "est_results.json"
+    if ~overwrite_existing && isfile(boot_results_path)
+
+        show_progress && println("\nSkipping boot iteration ", boot_run_idx) 
+
+        # read results
+        boot_result = JSON.parsefile(boot_results_path) 
+        
+        # df -- if it exists
+        boot_results_df_path = rootpath_boot_output * "est_results_df.csv"
+        if isfile(boot_results_df_path)
+            boot_result_df = CSV.read(boot_results_df_path, DataFrame)
+        else
+            boot_result_df = DataFrame()
+        end
+
+        return boot_result, boot_result_df
+    end
 
     ## load data and prepare
     # TODO: do and document this better -- default = assume data is a dictionary of vectors/matrices
@@ -592,18 +649,21 @@ try
             show_theta=show_theta,
 			show_progress=false)
 
-    
     # evaluate new boot moment function at the old parameter values
     boot_result["mom_at_theta_hat"] = momfn_loaded(theta_hat)
 
+    # housekeeping
     boot_result["boot_run_idx"] = boot_run_idx
     boot_result_df[!, "boot_run_idx"] .= boot_run_idx
-    # if haskey(boot_result, "results_stage1")
-    #     boot_result["results_stage1"][!, "boot_run_idx"] .= boot_run_idx
-    # end
-    # if haskey(boot_result, "results_stage2")
-    #     boot_result["results_stage2"][!, "boot_run_idx"] .= boot_run_idx
-    # end
+
+    # overwrite results and DF
+    if write_results_to_file > 0
+        open(rootpath_boot_output * "est_results.json" ,"w") do f
+            JSON.print(f, boot_result, 4)
+        end
+
+        CSV.write(rootpath_boot_output * "est_results_df.csv", boot_result_df)
+    end
 
     return boot_result, boot_result_df
 catch e
@@ -618,7 +678,7 @@ catch e
     else
         boot_result = Dict{String, Any}(
             "boot_run_idx" => boot_run_idx,
-            "outcome" => fail,
+            "outcome" => "fail",
             "outcome_detail" => ["bootstrap error " * string(boot_run_idx)]
         )
 
@@ -903,8 +963,11 @@ function run_checks(;
         # bootstrap:
         "boot_run_parallel" => false, # each bootstrap run in parallel.
 		"boot_n_runs" 		=> 100, # number of bootstrap runs 
-		        # "boot_n_theta0"=> 1, # for each bootstrap run: number of independent optimization runs with different starting conditions
-		"boot_write_results_to_file" => 0, # similar to "main_write_results_to_file"
+		
+        "boot_overwrite_existing" => true, # if results_df csv file exists, run again (true) or read (false)?
+        "boot_write_results_to_file" => 0, # similar to "main_write_results_to_file"
+
+
 		"boot_maxIter" 		=> 1000, # 
 		"boot_time_limit"	=> -1, # 
 		"boot_throw_exceptions" => true, # if "false" will not crash when one bootstrap run has error. Error will be recorded in gmm_results["gmm_boot_results"]
@@ -1053,9 +1116,8 @@ function run_estimation(;
             moms_subset=moms_subset,
             gmm_options=gmm_options)
 
-## Store estimation results here
-    # store parameters and options
-    est_results = Dict{String, Any}(
+## Store estimation options here
+    est_options = Dict{String, Any}(
         "gmm_options" => gmm_options,
         "theta0" => theta0,
         # "theta0_boot" => theta0_boot,
@@ -1071,6 +1133,10 @@ function run_estimation(;
         "n_params" => gmm_options["n_params"],
         "main_n_initial_cond" => main_n_initial_cond,
     )
+
+    open(gmm_options["rootpath_output"] * "est_options.json" ,"w") do f
+        JSON.print(f, est_options, 4)
+    end
     
 ## Load data into moments function
 	momfn_loaded = theta -> momfn3(theta, data)
@@ -1080,7 +1146,7 @@ function run_estimation(;
     gmm_options["show_progress"] && println("Starting main estimation")
 
     # TODO: add "use_unconverged_results" option
-    est_results["results"], est_results_df  = gmm_2step(
+    est_results, est_results_df  = gmm_2step(
         momfn_loaded    =momfn_loaded,
 
         theta0          =theta0,
@@ -1102,17 +1168,8 @@ function run_estimation(;
         show_trace      =gmm_options["main_show_trace"],
         show_theta      =gmm_options["main_show_theta"],
         show_progress   =gmm_options["show_progress"])
-    
 
-    if gmm_options["main_write_results_to_file"] > 0
-        open(gmm_options["rootpath_output"] * "est_results.json" ,"w") do f
-            JSON.print(f, est_results, 4)
-        end
-
-        CSV.write(gmm_options["rootpath_output"] * "est_results_df.csv", est_results_df)
-    end
-
-    return est_results, est_results_df
+    return est_options, est_results, est_results_df
 end
 
 
@@ -1182,12 +1239,12 @@ gmm_options, theta0, theta_lower, theta_upper, theta0_boot, momfn3, omega1, W = 
 
 
     ## Asymptotic Variance
-    if (gmm_options["var_asy"] || gmm_options["var_boot"] == "quick") && est_results["results"]["outcome"] != "fail"
+    if (gmm_options["var_asy"] || gmm_options["var_boot"] == "quick") && est_results["outcome"] != "fail"
 
         gmm_options["show_progress"] && println("Computing asymptotic variance")
 
         # Get estimated parameter vector
-        theta_hat = est_results["results"]["theta_hat"]
+        theta_hat = est_results["theta_hat"]
         
         # function that computes averaged moments
         mymomfunction_main_avg = theta -> mean(momfn_loaded(theta), dims=1)
@@ -1237,7 +1294,7 @@ gmm_options, theta0, theta_lower, theta_upper, theta0_boot, momfn3, omega1, W = 
             else
                 vcov_fn = omega1
             end
-            theta_hat_stage1 = est_results["results"]["theta_hat_stage1"]
+            theta_hat_stage1 = est_results["theta_hat_stage1"]
             Ω = vcov_fn(theta_hat_stage1, momfn_loaded)
 
             W = Symmetric(W)
@@ -1248,7 +1305,7 @@ gmm_options, theta0, theta_lower, theta_upper, theta0_boot, momfn3, omega1, W = 
 
         if gmm_options["estimator"] == "gmm2step"
             # W = Ω⁻¹ so the above simplifies to (G'WG)⁻¹
-            W = Symmetric(est_results["results"]["Wstep2"])
+            W = Symmetric(est_results["Wstep2"])
             V = inv(transpose(G) * W * G) 
         end
 
@@ -1311,7 +1368,7 @@ gmm_options, theta0, theta_lower, theta_upper, theta0_boot, momfn3, omega1, W = 
         end
 
         # Get estimated parameter vector
-        theta_hat = est_results["results"]["theta_hat"]
+        theta_hat = est_results["theta_hat"]
 
         # Define moment function for bootstrap -- target moment value at estimated theta
         mom_at_theta_hat = mean(momfn_loaded(theta_hat), dims=1)
@@ -1358,12 +1415,16 @@ gmm_options, theta0, theta_lower, theta_upper, theta0_boot, momfn3, omega1, W = 
                         theta_lower=theta_lower,
                         theta_upper=theta_upper,
                         theta_hat=theta_hat,
-                        rootpath_boot_output=boot_folders[idx],
                         sample_data_fn=sample_data_fn,
                         boot_rng=boot_rngs[idx],
+                        
+                        overwrite_existing=gmm_options["boot_overwrite_existing"],
                         write_results_to_file=gmm_options["boot_write_results_to_file"],
+                        rootpath_boot_output=boot_folders[idx],
+                        
                         maxIter=gmm_options["boot_maxIter"],
                         time_limit=gmm_options["boot_time_limit"],
+
                         throw_exceptions=gmm_options["boot_throw_exceptions"],
                         show_trace=false,
                         show_theta=gmm_options["boot_show_theta"],
@@ -1381,10 +1442,13 @@ gmm_options, theta0, theta_lower, theta_upper, theta0_boot, momfn3, omega1, W = 
                         theta_lower=theta_lower,
                         theta_upper=theta_upper,
                         theta_hat=theta_hat,
-                        rootpath_boot_output=boot_folders[boot_run_idx],
                         sample_data_fn=sample_data_fn,
                         boot_rng=boot_rngs[boot_run_idx],
+
+                        overwrite_existing=gmm_options["boot_overwrite_existing"],
                         write_results_to_file=gmm_options["boot_write_results_to_file"],
+                        rootpath_boot_output=boot_folders[boot_run_idx],
+
                         maxIter=gmm_options["boot_maxIter"],
                         time_limit=gmm_options["boot_time_limit"],
                         throw_exceptions=gmm_options["boot_throw_exceptions"],

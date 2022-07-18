@@ -11,6 +11,9 @@ using PrettyPrint
 using Printf
 using FiniteDifferences
 
+using FixedEffectModels
+using GLM 
+
 # Random.seed!(1234)
 
 include("gmm_wrappers.jl")
@@ -43,9 +46,12 @@ include("gmm_display.jl")
 ## GMM options
     gmm_options = Dict{String, Any}(
         "main_run_parallel" => false,
+
         "var_boot" => "slow",
         "boot_n_runs" => 10,
         "boot_throw_exceptions" => true,
+        "boot_overwrite_existing" => false,
+
         "estimator" => "gmm1step",
         "main_write_results_to_file" => 2,
         "boot_write_results_to_file" => 1,
@@ -63,7 +69,7 @@ include("gmm_display.jl")
     theta0_boot = random_initial_conditions([1.0 5.0], theta_lower, theta_upper, boot_n_initial_cond)
 
 ## Run estimation
-    est_results, est_results_df = run_estimation(
+    est_options, est_results, est_results_df = run_estimation(
                 momfn=moments_gmm_loaded,
                 data=data_dict,
                 theta0=theta0,
@@ -83,4 +89,8 @@ include("gmm_display.jl")
                 est_results=est_results)
 
 ## print model_results
-    print_results(est_results=est_results, boot_results=boot_results, boot_df=boot_df)
+    print_results(
+        est_options=est_options,
+        est_results=est_results, 
+        boot_results=boot_results, 
+        boot_df=boot_df)

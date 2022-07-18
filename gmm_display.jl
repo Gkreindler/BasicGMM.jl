@@ -19,13 +19,14 @@
 # end
 
 function print_results(;
+            est_options,
             est_results, 
             boot_results=nothing, 
             boot_df=nothing,
             ci_level=2.5)
 
     # prep
-    gmm_options = est_results["gmm_options"]
+    gmm_options = est_options["gmm_options"]
 
     printstyled("======================================================================\n", color=:yellow)
 
@@ -39,38 +40,38 @@ function print_results(;
         println(" Classical Minimum Distance with Optimal Weighting Matrix\n")
     end
     
-    n_moms_estim = est_results["n_moms"]
-    if ~isnothing(est_results["moms_subset"])    
-        n_moms_dropd = est_results["n_moms_full"] - est_results["n_moms"]
+    n_moms_estim = est_options["n_moms"]
+    if ~isnothing(est_options["moms_subset"])    
+        n_moms_dropd = est_options["n_moms_full"] - est_options["n_moms"]
         
         print(" # moments: ", n_moms_estim, " (plus ", n_moms_dropd, " not used). ")
     else
         print(" # moments: ", n_moms_estim, ". ")
     end
     
-    n_params = est_results["n_params"]
-    if ~isnothing(est_results["theta_fix"])
+    n_params = est_options["n_params"]
+    if ~isnothing(est_options["theta_fix"])
         
-        n_params_estimated = length(findall(isnothing, est_results["theta_fix"]))
+        n_params_estimated = length(findall(isnothing, est_options["theta_fix"]))
 
         print("# parameters: ", n_params_estimated, " (plus ", n_params - n_params_estimated, " fixed). ")
     else
         print("# parameters: ", n_params, ". ")
     end
     
-    println("# observations: ", est_results["n_observations"], ".\n")
+    println("# observations: ", est_options["n_observations"], ".\n")
 
-    if ~isnothing(est_results["moms_subset"])
-        println(" Estimation uses moments: ", est_results["moms_subset"], "\n")
+    if ~isnothing(est_options["moms_subset"])
+        println(" Estimation uses moments: ", est_options["moms_subset"], "\n")
     end
 
-    n_params = est_results["n_params"]
-    if isnothing(est_results["theta_fix"])
+    n_params = est_options["n_params"]
+    if isnothing(est_options["theta_fix"])
         idxs_fixed = []
 
         smaller_idxs = 1:n_params
     else
-        theta_fix = est_results["theta_fix"]
+        theta_fix = est_options["theta_fix"]
         idxs_fixed = findall(x -> ~isnothing(x), theta_fix)
         idxs_estim = findall(isnothing, theta_fix)
 
@@ -80,7 +81,7 @@ function print_results(;
     end
 
     # parameter estimates
-    results = est_results["results"]
+    results = est_results
     if results["outcome"] != "failed"
 
         # header
@@ -98,7 +99,7 @@ function print_results(;
             println(l1 * "------------------------------------------------------------------------")
         end
 
-        for i=1:est_results["n_params"]
+        for i=1:est_options["n_params"]
 
             output_line = " " * string(i) * ") "
             
@@ -107,7 +108,7 @@ function print_results(;
             end
 
             if i in idxs_fixed
-                theta = est_results["theta_fix"][i]
+                theta = est_options["theta_fix"][i]
                 output_line *= " " * rpad(@sprintf("%g", theta), 20, " ") * "(fixed parameter)"
             else
 
@@ -162,7 +163,7 @@ function print_results(;
     end
 
     ### Optimization info:
-    print(" Number of initial conditions: ", est_results["main_n_initial_cond"], " (main estimation)")
+    print(" Number of initial conditions: ", est_options["main_n_initial_cond"], " (main estimation)")
     if gmm_options["var_boot"] == "slow"
         println(", ", boot_results[1]["boot_n_initial_cond"], " (bootstrap)")
     else
@@ -174,7 +175,7 @@ function print_results(;
         print(" Main estimation optimization: ")
     end
 
-    if est_results["results"]["outcome"] == "success"
+    if est_results["outcome"] == "success"
         printstyled("All iterations converged.\n", color=:green)
     else
         printstyled(" Some iterations did not converge:\n", color=:orange)

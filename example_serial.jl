@@ -69,7 +69,7 @@ include("gmm_display.jl")
     theta0_boot = random_initial_conditions([1.0 5.0], theta_lower, theta_upper, boot_n_initial_cond)
 
 ## Run estimation
-    est_options, est_results, est_results_df = run_estimation(
+    est_options2, est_results, est_results_df = run_estimation(
                 momfn=moments_gmm_loaded,
                 data=data_dict,
                 theta0=theta0,
@@ -89,6 +89,8 @@ include("gmm_display.jl")
                 est_results=est_results)
 
 ## print model_results
+    est_options = JSON.parsefile(gmm_options["rootpath_output"] * "est_options.json")
+
     print_results(
         est_options=est_options,
         est_results=est_results, 

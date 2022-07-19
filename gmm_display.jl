@@ -135,7 +135,7 @@ function print_results(;
                 if ~(isnothing(gmm_options["var_boot"]) || (gmm_options["var_boot"] == "")) 
                     ci_levels = [ci_level, 100 - ci_level]
 
-                    boot_vec = [boot_result["theta_hat"][j] for boot_result=boot_results]
+                    boot_vec = [boot_result["theta_hat"][j] for boot_result=boot_results if boot_result["outcome"] != "fail"]
 
                     # ! skipping missing!
                     boot_vec = skipmissing(boot_vec) |> collect

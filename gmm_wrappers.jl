@@ -1483,5 +1483,5 @@ gmm_options, theta0, theta_lower, theta_upper, theta0_boot, momfn3, omega1, W = 
 
     end # end
 
-    return boot_result_json, boot_result_dfs
+    return boot_result_json, boot_result_dfs, gmm_options
 end

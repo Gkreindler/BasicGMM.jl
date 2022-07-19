@@ -1471,7 +1471,7 @@ gmm_options, theta0, theta_lower, theta_upper, theta0_boot, momfn3, omega1, W = 
             push!(boot_result_dfs, mydf)
         end
 
-        boot_result_dfs = vcat(boot_result_dfs...)
+        boot_result_dfs = vcat(boot_result_dfs..., cols = :union)
 
         if gmm_options["boot_write_results_to_file"] > 0
             open(rootpath_boot_output * "results_boot.json" ,"w") do f

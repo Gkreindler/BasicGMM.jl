@@ -18,6 +18,34 @@
 #     return estimates_row[1, r"param_"] |> Vector
 # end
 
+function collect_boot_runs(base_folder; nruns=100)
+    base_folder = "G:/My Drive/optnets/analysis/gmm-server/gmm-v6-all2/"
+    nruns = 100
+
+    bootdfs = []
+    for i=1:nruns
+        println("processing run ", i)
+        dfpath = base_folder * "boot/boot_run_" * string(i) * "/est_results_df.csv"
+        if isfile(dfpath)
+            push!(bootdfs, CSV.read(dfpath, DataFrame))
+        end
+    end
+
+    bootdfs = vcat(bootdfs..., cols=:union)
+    unique(bootdfs.boot_run_idx) |> size
+
+    quantile(bootdfs.param_1, [0.05, 0.95])
+
+    quantile(bootdfs.param_1 ./ bootdfs.param_2, [0.05, 0.95])
+
+    mean(bootdfs.param_1 ./ bootdfs.param_2 .> 1.0)
+
+    quantile(bootdfs.param_2, [0.05, 0.95])
+
+
+
+end
+
 function print_results(;
             est_options,
             est_results, 

@@ -339,7 +339,7 @@ function gmm_2step(;
         gmm_results["outcome_stage1_detail"] = [string(n_converged) * "/" * string(n_theta0) * " iterations converged"]
 
         if minimum(all_results_df.obj_vals_converged) > minimum(all_results_df.obj_vals)
-            push!(gmm_results["outcome_detail"], "minimum objective value occurs in iteration that did not converge")
+            push!(gmm_results["outcome_stage1_detail"], "minimum objective value occurs in iteration that did not converge")
         end
 
     else

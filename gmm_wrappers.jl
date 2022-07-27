@@ -1075,7 +1075,8 @@ function run_inference(;
 		gmm_options=nothing,
         
         est_results=nothing,     # dictionary with estimation results
-        est_results_path=nothing # path to JSON with estimation results
+        est_results_path=nothing, # path to JSON with estimation results
+        mt_seed=123
         )
 
 ## Get estimation results as a dictionary from JSON file
@@ -1264,7 +1265,8 @@ gmm_options, theta0, theta_lower, theta_upper, theta0_boot, momfn3, omega1, W = 
         momfn_boot = (mytheta, mydata_dict) -> (momfn3(mytheta, mydata_dict) .- mom_at_theta_hat)
 
         # one random number generator per bootstrap run
-        current_rng = MersenneTwister(123);
+        current_rng = MersenneTwister(mt_seed);
+        # current_rng = MersenneTwister(123);
         boot_rngs = Vector{Any}(undef, gmm_options["boot_n_runs"])
 
         gmm_options["show_progress"] && println("Creating random number generator for boot run:")

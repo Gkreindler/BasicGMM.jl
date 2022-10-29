@@ -1,31 +1,48 @@
 
 # Todo: how to handle (a) errors in certain runs, (b) lack of convergence
-# function get_estimates(main_results, main_results_df; onestep=true)
+# function get_estimates(est_results, est_results_df; onestep=true)
 
-#     if main_results["outcome"] == "skipped"
-#         return main_results["theta_hat"]
+#     if est_results["outcome"] == "skipped"
+#         return est_results["theta_hat"]
 #     end
 
 #     if onestep
-#         main_results_df = main_results["results_stage1"]
+#         est_results_df = est_results["results_stage1"]
 #     else # two-step optimal
-#         main_results_df = main_results["results_stage2"]
+#         est_results_df = est_results["results_stage2"]
 #     end
 
-#     estimates_row = main_results_df[main_results_df.is_optimum, :]
+#     estimates_row = est_results_df[est_results_df.is_optimum, :]
 #     @assert size(estimates_row)[1] == 1
 
 #     return estimates_row[1, r"param_"] |> Vector
 # end
 
+function collect_boot_runs(base_folder; nruns=100)
+
+    bootdfs = []
+    for i=1:nruns
+        println("processing run ", i)
+        dfpath = base_folder * "boot/boot_run_" * string(i) * "/est_results_df.csv"
+        if isfile(dfpath)
+            push!(bootdfs, CSV.read(dfpath, DataFrame))
+        end
+    end
+
+    bootdfs = vcat(bootdfs..., cols=:union)
+
+    return bootdfs
+end
+
 function print_results(;
-            main_results, 
+            est_options,
+            est_results, 
             boot_results=nothing, 
             boot_df=nothing,
             ci_level=2.5)
 
     # prep
-    gmm_options = main_results["gmm_options"]
+    gmm_options = est_options["gmm_options"]
 
     printstyled("======================================================================\n", color=:yellow)
 
@@ -39,38 +56,38 @@ function print_results(;
         println(" Classical Minimum Distance with Optimal Weighting Matrix\n")
     end
     
-    n_moms_estim = main_results["n_moms"]
-    if ~isnothing(main_results["moms_subset"])    
-        n_moms_dropd = main_results["n_moms_full"] - main_results["n_moms"]
+    n_moms_estim = est_options["n_moms"]
+    if ~isnothing(est_options["moms_subset"])    
+        n_moms_dropd = est_options["n_moms_full"] - est_options["n_moms"]
         
         print(" # moments: ", n_moms_estim, " (plus ", n_moms_dropd, " not used). ")
     else
         print(" # moments: ", n_moms_estim, ". ")
     end
     
-    n_params = main_results["n_params"]
-    if ~isnothing(main_results["theta_fix"])
+    n_params = est_options["n_params"]
+    if ~isnothing(est_options["theta_fix"])
         
-        n_params_estimated = length(findall(isnothing, main_results["theta_fix"]))
+        n_params_estimated = length(findall(isnothing, est_options["theta_fix"]))
 
         print("# parameters: ", n_params_estimated, " (plus ", n_params - n_params_estimated, " fixed). ")
     else
-        print("# parameters: ", n_params, "). ")
+        print("# parameters: ", n_params, ". ")
     end
     
-    println("# observations: ", main_results["n_observations"], ".\n")
+    println("# observations: ", est_options["n_observations"], ".\n")
 
-    if ~isnothing(main_results["moms_subset"])
-        println(" Estimation uses moments: ", main_results["moms_subset"], "\n")
+    if ~isnothing(est_options["moms_subset"])
+        println(" Estimation uses moments: ", est_options["moms_subset"], "\n")
     end
 
-    n_params = main_results["n_params"]
-    if isnothing(main_results["theta_fix"])
+    n_params = est_options["n_params"]
+    if isnothing(est_options["theta_fix"])
         idxs_fixed = []
 
         smaller_idxs = 1:n_params
     else
-        theta_fix = main_results["theta_fix"]
+        theta_fix = est_options["theta_fix"]
         idxs_fixed = findall(x -> ~isnothing(x), theta_fix)
         idxs_estim = findall(isnothing, theta_fix)
 
@@ -80,7 +97,7 @@ function print_results(;
     end
 
     # parameter estimates
-    results = main_results["results"]
+    results = est_results
     if results["outcome"] != "failed"
 
         # header
@@ -98,7 +115,7 @@ function print_results(;
             println(l1 * "------------------------------------------------------------------------")
         end
 
-        for i=1:main_results["n_params"]
+        for i=1:est_options["n_params"]
 
             output_line = " " * string(i) * ") "
             
@@ -107,7 +124,7 @@ function print_results(;
             end
 
             if i in idxs_fixed
-                theta = main_results["theta_fix"][i]
+                theta = est_options["theta_fix"][i]
                 output_line *= " " * rpad(@sprintf("%g", theta), 20, " ") * "(fixed parameter)"
             else
 
@@ -122,7 +139,7 @@ function print_results(;
                     z_low  = quantile(Normal(), ci_level / 100.0)
                     z_high = quantile(Normal(), 1.0 - ci_level / 100.0)
 
-                    se = main_results["asy_stderr"][j]
+                    se = est_results["asy_stderr"][j]
                     asy_cilow = theta  .+ z_low  .* se
                     asy_cihigh = theta .+ z_high .* se
 
@@ -134,7 +151,7 @@ function print_results(;
                 if ~(isnothing(gmm_options["var_boot"]) || (gmm_options["var_boot"] == "")) 
                     ci_levels = [ci_level, 100 - ci_level]
 
-                    boot_vec = [boot_result["theta_hat"][j] for boot_result=boot_results]
+                    boot_vec = [boot_result["theta_hat"][j] for boot_result=boot_results if boot_result["outcome"] != "fail"]
 
                     # ! skipping missing!
                     boot_vec = skipmissing(boot_vec) |> collect
@@ -162,9 +179,9 @@ function print_results(;
     end
 
     ### Optimization info:
-    print(" Number of initial conditions: ", main_results["main_n_initial_cond"], " (main estimation)")
+    print(" Number of initial conditions: ", est_options["main_n_initial_cond"], " (main estimation)")
     if gmm_options["var_boot"] == "slow"
-        println(", ", main_results["boot_n_initial_cond"], " (bootstrap)")
+        println(", ", boot_results[1]["boot_n_initial_cond"], " (bootstrap)")
     else
         println()
     end
@@ -174,7 +191,7 @@ function print_results(;
         print(" Main estimation optimization: ")
     end
 
-    if main_results["results"]["outcome"] == "success"
+    if est_results["outcome"] == "success"
         printstyled("All iterations converged.\n", color=:green)
     else
         printstyled(" Some iterations did not converge:\n", color=:orange)
@@ -193,14 +210,6 @@ function print_results(;
         print(" Bootstrap estimation optimization: ")
 
         # TODO: handle failed runs
-        # boot_df = [boot_result["results_stage1"] for boot_result=boot_results]
-        # boot_df = vcat(boot_df...)
-
-        if gmm_options["2step"]
-            boot_df2 = [boot_result["results_stage2"] for boot_result=boot_results]
-            boot_df2 = vcat(boot_df2...)
-            boot_df = vcat(boot_df, boot_df2)
-        end
 
         boot_df_results = combine(groupby(boot_df, "boot_run_idx"), :opt_converged => mean => :mean_opt_converged)
 

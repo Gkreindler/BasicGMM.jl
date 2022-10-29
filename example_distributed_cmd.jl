@@ -23,6 +23,9 @@ end
     using Printf
 
     using FiniteDifferences
+
+    using FixedEffectModels
+    using GLM
 end 
 
 
@@ -50,11 +53,14 @@ end
 
 ## Define moments function with certain parameters already "loaded"
     
-    # on each worker
-    @everywhere moments_gmm_loaded = (mytheta, mydata_dict) -> moments_gmm(
-            theta=mytheta, 
-            mydata_dict=mydata_dict, 
-            model_params=model_params)
+    # get data moments
+    @everywhere M, V = moms_data_cmd(data_dict)
+
+    # model moments minus data moments
+    @everywhere moments_gmm_loaded = (mytheta, mydata_dict) -> (moms_model_cmd(
+        mytheta=mytheta, 
+        mydata_dict=mydata_dict, 
+        model_params=model_params) .- M)
 
     # test
     @everywhere moments_gmm_loaded([1.0, 5.0], data_dict)
@@ -63,13 +69,13 @@ end
 ## GMM options
     gmm_options = Dict{String, Any}(
         "main_run_parallel" => true,
-        "estimator" => "gmm1step",
+        "estimator" => "cmd",
         "var_boot" => "slow",
         "boot_n_runs" => 10,
         "boot_run_parallel" => true,
         "boot_throw_exceptions" => true,
         "main_write_results_to_file" => 2,
-        "boot_write_results_to_file" => 1,
+        "boot_write_results_to_file" => 2,
         "rootpath_output" => "G:/My Drive/optnets/analysis/temp/"
     )
 
@@ -90,6 +96,7 @@ est_results, est_results_df = run_estimation(
 		theta0=theta0,
         theta_lower=theta_lower,
         theta_upper=theta_upper,
+        omega=V,
 		gmm_options=gmm_options)
 
 ### Run inference
@@ -99,6 +106,7 @@ boot_results, boot_df = run_inference(
         theta0_boot=theta0_boot,
         theta_lower=theta_lower,
         theta_upper=theta_upper,
+        omega=V,
         sample_data_fn=nothing,
         gmm_options=gmm_options,
         est_results=est_results)
